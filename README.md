@@ -81,7 +81,7 @@ A full-featured **SMM (Social Media Marketing) panel** built on **Cloudflare Wor
 ### 1. Clone & Install
 
 ```bash
-git clone https://github.com/your-username/social-media-panel.git
+git clone https://github.com/alirezaprogrammermaker/social-media-panel.git
 cd social-media-panel
 pnpm install
 ```
