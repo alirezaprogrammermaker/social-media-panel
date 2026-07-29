@@ -1,0 +1,2 @@
+-- Column api_provider_service_price already exists in database (added manually)
+-- This migration is a placeholder to keep d1_migrations in sync

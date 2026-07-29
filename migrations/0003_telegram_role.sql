@@ -1,0 +1,1 @@
+ALTER TABLE telegram_users ADD COLUMN role TEXT NOT NULL DEFAULT 'user';

@@ -1,0 +1,46 @@
+# Dependencies
+node_modules
+
+# Build output
+dist
+dist-ssr
+
+# TypeScript
+*.tsbuildinfo
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment & secrets
+*.local
+.env
+.env.*
+!.env.example
+
+# Wrangler
+.wrangler
+.dev.vars
+.dev.vars.*
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Tool-specific
+.mimocode
