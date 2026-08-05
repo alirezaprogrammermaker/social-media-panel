@@ -29,9 +29,7 @@ export class AiDatabaseAccess {
      */
     async getAllowedTables(): Promise<string[]> {
         AiSetting.use(this.db);
-        const settingKey = `ai_allowed_tables`;
-        const rolePrefix = `${this.role}_`;
-        const value = await AiSetting.get(`ai${rolePrefix}allowed_tables`);
+        const value = await AiSetting.get(`ai_${this.role}_allowed_tables`);
 
         if (!value) {
             return [];

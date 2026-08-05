@@ -58,11 +58,23 @@ export class SmmApiProvider {
             body: body.toString(),
         });
 
-        if (!response.ok) {
-            throw new Error(`API request failed: ${response.status}`);
+        const raw = await response.text();
+        let data: any;
+        try {
+            data = raw ? JSON.parse(raw) : {};
+        } catch {
+            throw new Error(
+                response.ok
+                    ? 'Invalid JSON response from provider'
+                    : `API request failed: ${response.status}`
+            );
         }
 
-        return response.json();
+        if (!response.ok) {
+            throw new Error(data?.error || `API request failed: ${response.status}`);
+        }
+
+        return data;
     }
 
     async getServices(): Promise<SmmService[]> {
@@ -120,15 +132,19 @@ export class SmmApiProvider {
     }
 
     static mapApiStatus(apiStatus: string): SmmOrderStatusType {
+        const normalized = String(apiStatus || '').trim().toLowerCase();
         const statusMap: Record<string, SmmOrderStatusType> = {
-            'Pending': 'Pending',
-            'In progress': 'In progress',
-            'Completed': 'Completed',
-            'Partial': 'Partial',
-            'Processing': 'Processing',
-            'Canceled': 'Canceled',
-            'Cancelled': 'Canceled',
+            'pending': 'Pending',
+            'in progress': 'In progress',
+            'inprogress': 'In progress',
+            'completed': 'Completed',
+            'complete': 'Completed',
+            'partial': 'Partial',
+            'processing': 'Processing',
+            'canceled': 'Canceled',
+            'cancelled': 'Canceled',
+            'refunded': 'Canceled',
         };
-        return statusMap[apiStatus] || 'Pending';
+        return statusMap[normalized] || 'Pending';
     }
 }

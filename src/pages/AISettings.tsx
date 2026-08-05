@@ -66,16 +66,21 @@ export function AISettings() {
         setLoading(true);
         try {
             const data = await aiApi.getSettings();
-            if (data.admin || data.user) setAllSettings({ admin: { enabled: data.admin?.enabled ?? 'true', system_prompt: data.admin?.system_prompt ?? '', model: data.admin?.model ?? '', max_tokens: data.admin?.max_tokens ?? '1024', temperature: data.admin?.temperature ?? '0.7', daily_limit: data.admin?.daily_limit ?? '100', allowed_tables: data.admin?.allowed_tables ?? '[]', translate_prompt: data.admin?.ai_admin_translate_prompt ?? '', description_prompt: data.admin?.ai_admin_description_prompt ?? '' }, user: { enabled: data.user?.enabled ?? 'true', system_prompt: data.user?.system_prompt ?? '', model: data.user?.model ?? '', max_tokens: data.user?.max_tokens ?? '512', temperature: data.user?.temperature ?? '0.7', daily_limit: data.user?.daily_limit ?? '20', allowed_tables: data.user?.allowed_tables ?? '[]' } });
+            if (data.admin || data.user) setAllSettings({ admin: { enabled: data.admin?.enabled ?? 'true', system_prompt: data.admin?.system_prompt ?? '', model: data.admin?.model ?? '', max_tokens: data.admin?.max_tokens ?? '1024', temperature: data.admin?.temperature ?? '0.7', daily_limit: data.admin?.daily_limit ?? '100', allowed_tables: data.admin?.allowed_tables ?? '[]', translate_prompt: data.admin?.translate_prompt ?? data.admin?.ai_admin_translate_prompt ?? '', description_prompt: data.admin?.description_prompt ?? data.admin?.ai_admin_description_prompt ?? '' }, user: { enabled: data.user?.enabled ?? 'true', system_prompt: data.user?.system_prompt ?? '', model: data.user?.model ?? '', max_tokens: data.user?.max_tokens ?? '512', temperature: data.user?.temperature ?? '0.7', daily_limit: data.user?.daily_limit ?? '20', allowed_tables: data.user?.allowed_tables ?? '[]' } });
         } catch { message.error('خطا'); } finally { setLoading(false); }
     }
 
     async function fetchUsageStats() { try { setUsageStats(await aiApi.getUsage()); } catch {} }
 
     async function handleSaveSettings(role: 'admin' | 'user', values: Record<string, string>) {
-        const saveValues: Record<string, string> = { ...values };
-        if (values.translate_prompt !== undefined) saveValues.ai_admin_translate_prompt = values.translate_prompt;
-        if (values.description_prompt !== undefined) saveValues.ai_admin_description_prompt = values.description_prompt;
+        const { translate_prompt, description_prompt, ...rest } = values;
+        const saveValues: Record<string, string> = { ...rest };
+        delete saveValues.ai_admin_translate_prompt;
+        delete saveValues.ai_admin_description_prompt;
+        if (role === 'admin') {
+            if (translate_prompt !== undefined) saveValues.translate_prompt = translate_prompt;
+            if (description_prompt !== undefined) saveValues.description_prompt = description_prompt;
+        }
         await aiApi.updateSettings({ [role]: saveValues }); fetchSettings(); fetchUsageStats();
     }
 

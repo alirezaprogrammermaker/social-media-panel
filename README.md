@@ -165,14 +165,39 @@ pnpm deploy
 
 1. Go to dashboard → **Settings** → **Telegram Bot**
 2. Enter your bot token (from [@BotFather](https://t.me/BotFather))
-3. Click **Save** → then **Set Webhook**
+3. Click **Save** → then **Set Webhook** (required)
 4. The webhook URL will be: `https://your-worker.workers.dev/api/telegram/webhook`
+
+**Important:** The worker **fail-closes** Telegram updates if `telegram_webhook_secret` is missing. Saving the token alone is not enough — you must click **Set Webhook** so the panel generates a secret and registers it with Telegram (`secret_token`). Until then, `/api/telegram/webhook` returns `403`.
 
 ### Enable AI Features
 
 1. Go to **Settings** → **Support** → **AI Receipt Analysis**
 2. Click **Activate** to enable the Llama 3.2 Vision model
 3. Configure the receipt analysis prompt
+
+---
+
+## ⏱️ Cron Jobs
+
+Configured in `wrangler.jsonc` (`*/5 * * * *` and a secondary trigger). The Worker `scheduled` handler uses **Asia/Tehran** wall-clock time:
+
+| Cadence (Tehran) | Behavior |
+|------------------|----------|
+| Every 5 minutes | Poll provider order statuses; refund **Canceled** / **Partial**; recover charged orders missing `api_provider_order_id` |
+| Every hour (`:00`) | Sync provider service catalogs (keeps local selling `rate`; updates `api_provider_service_price`) and provider balances |
+| Configurable daily time | Optional Telegram daily stats report (`stats_report_enabled` / `stats_report_time`) |
+
+---
+
+## 💰 Pricing & money notes (ops)
+
+- **`services.rate`** — customer selling price in **toman**
+  - **Default** (and other quantity types): price **per 1000** → charge = `ceil(qty * rate / 1000)`
+  - **Package**: **flat package price** → charge = `ceil(rate)` (quantity is not collected)
+- **`services.api_provider_service_price`** — provider cost (usually USD from the API). Hourly sync updates this field and metadata; it does **not** overwrite your selling `rate`.
+- Orders linked to a provider are submitted to the API **before** charging the user. Failed provider calls do not create a paid local order. Admin cancel / provider cancel&partial paths refund using the stored order `charge`.
+- Dashboard **Approve payment** and Telegram admin approve credit balance only while the payment is still `pending` (atomic batch).
 
 ---
 
@@ -277,9 +302,18 @@ The project uses **22 migrations** with the following main tables:
 - **Never commit** your `.dev.vars` or `.env` files
 - **Use Wrangler secrets** for production: `wrangler secret put SEED_ADMIN_SECRET`
 - The `/api/auth/seed-admin` endpoint requires a secret key
-- All dashboard routes require admin authentication
-- Telegram webhook validates the `secret_token` header
+- All `/api/dashboard`, `/api/smm`, and `/api/ai` routes require an authenticated **admin** session (HTTP-only cookie)
+- Telegram webhook validates the `X-Telegram-Bot-Api-Secret-Token` header and refuses traffic when no secret is configured
 - Passwords are hashed with PBKDF2 (100k iterations, SHA-256)
+- Signup creates a normal user only; the React dashboard is admin-only (use `seed-admin` for the first admin)
+
+### Known residual risks
+
+- Bot conversation state and some rate limits are **in-memory** per isolate (not durable across Workers isolates)
+- Refund idempotency is marked in `orders.error_message` as `refunded:N` (works, but a dedicated column would be cleaner)
+- If the provider accepts an order and a later cancel-after-DB-failure also fails, a rare orphan provider order can remain until manual cleanup
+- Service types **Custom Comments / Mentions / Subscriptions** are not fully guided in the Telegram order UI (fields like comments/usernames are not collected)
+- No automated test suite yet
 
 ---
 

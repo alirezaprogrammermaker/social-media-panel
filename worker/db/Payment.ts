@@ -58,6 +58,45 @@ export class Payment extends Model<PaymentRow> {
         );
     }
 
+    /** Atomically transition a pending payment; returns false if already reviewed. */
+    static async updatePendingStatus(this: any, id: number, status: string, adminNote?: string): Promise<boolean> {
+        const now = nowTehran();
+        const result = await this.db
+            .prepare(
+                `UPDATE ${this.table} SET status = ?, admin_note = ?, updated_at = ? WHERE id = ? AND status = 'pending'`
+            )
+            .bind(status, adminNote || null, now, id)
+            .run();
+        return (result.meta?.changes ?? 0) > 0;
+    }
+
+    /**
+     * Approve a pending payment and credit balance in one D1 batch.
+     * Returns false if already reviewed or the telegram user row is missing.
+     */
+    static async approveAndCredit(this: any, id: number, userChatId: number, amount: number): Promise<boolean> {
+        const now = nowTehran();
+        const results = await this.db.batch([
+            this.db
+                .prepare(
+                    `UPDATE telegram_users SET balance = balance + ?, updated_at = ?
+                     WHERE chat_id = ?
+                       AND EXISTS (SELECT 1 FROM ${this.table} WHERE id = ? AND status = 'pending')`
+                )
+                .bind(amount, now, userChatId, id),
+            this.db
+                .prepare(
+                    `UPDATE ${this.table} SET status = 'approved', updated_at = ?
+                     WHERE id = ? AND status = 'pending'
+                       AND EXISTS (SELECT 1 FROM telegram_users WHERE chat_id = ?)`
+                )
+                .bind(now, id, userChatId),
+        ]);
+        const credited = results[0]?.meta?.changes ?? 0;
+        const approved = results[1]?.meta?.changes ?? 0;
+        return credited > 0 && approved > 0;
+    }
+
     static async getStats(this: any): Promise<{
         total: number;
         pending: number;

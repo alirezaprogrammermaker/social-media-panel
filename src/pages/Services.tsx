@@ -313,7 +313,26 @@ export default function Services() {
                         <Select.Option value="Package">Package</Select.Option><Select.Option value="Mentions">Mentions</Select.Option>
                         <Select.Option value="Subscriptions">Subscriptions</Select.Option>
                     </Select></Form.Item>
-                    <Space><Form.Item name="rate" label="قیمت"><Input /></Form.Item><Form.Item name="min" label="حداقل"><Input /></Form.Item><Form.Item name="max" label="حداکثر"><Input /></Form.Item></Space>
+                    <Form.Item noStyle shouldUpdate={(prev, cur) => prev.type !== cur.type}>
+                        {() => {
+                            const isPackage = form.getFieldValue('type') === 'Package';
+                            return (
+                                <Space>
+                                    <Form.Item
+                                        name="rate"
+                                        label={isPackage ? 'قیمت پکیج (تومان)' : 'قیمت (تومان / ۱۰۰۰)'}
+                                        tooltip={isPackage
+                                            ? 'برای پکیج، مبلغ نهایی مشتری را وارد کنید (نه قیمت هر ۱۰۰۰)'
+                                            : 'قیمت فروش به ازای هر ۱۰۰۰ واحد؛ با همگام‌سازی API روی api_provider_service_price نوشته می‌شود و rate فروش دستی می‌ماند'}
+                                    >
+                                        <Input />
+                                    </Form.Item>
+                                    <Form.Item name="min" label="حداقل"><Input /></Form.Item>
+                                    <Form.Item name="max" label="حداکثر"><Input /></Form.Item>
+                                </Space>
+                            );
+                        }}
+                    </Form.Item>
                     <Form.Item name="api_provider_id" label="ارائه‌دهنده API">
                         <Select placeholder="انتخاب ارائه‌دهنده" allowClear>
                             <Select.Option key="manual" value="manual">دستی</Select.Option>

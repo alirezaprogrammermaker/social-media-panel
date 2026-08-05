@@ -8,6 +8,7 @@ import { orderState } from '../state';
 import { helpKeyboard, categoryKeyboard, serviceKeyboard, orderBackKeyboard, ITEMS_PER_PAGE } from '../keyboards';
 import { MESSAGES } from '../constants';
 import { nowTehran } from '../../utils/date';
+import { calculateCustomerCharge } from '../../utils/pricing';
 
 export async function handleOrderStart(ctx: any, db: D1Database, userId: number) {
     Category.use(db);
@@ -254,7 +255,12 @@ export async function handleServiceSelect(ctx: any, db: D1Database, userId: numb
     if (service.description) {
         message += `\n\n📝 ${service.description}`;
     }
-    message += `\n\n💰 قیمت: ${service.rate} تومان به ازای هر ۱۰۰۰\n📈 حداقل: ${service.min} | حداکثر: ${service.max}`;
+    const isPackageService = (service.type || 'Default') === 'Package';
+    if (isPackageService) {
+        message += `\n\n💰 قیمت پکیج: ${Number(service.rate || 0).toLocaleString()} تومان`;
+    } else {
+        message += `\n\n💰 قیمت: ${service.rate} تومان به ازای هر ۱۰۰۰\n📈 حداقل: ${service.min} | حداکثر: ${service.max}`;
+    }
     message += `\n\n🔗 لینک پست را وارد کنید:`;
 
     await ctx.reply(message, { reply_markup: orderBackKeyboard() });
@@ -264,15 +270,14 @@ export async function handleLinkInput(ctx: any, db: D1Database, userId: number, 
     const state = orderState.get(userId);
     if (!state) return;
 
-    const isPackage = state.serviceType === 'Default' || state.serviceType === 'Package';
+    // Only Package services skip quantity; Default (likes/followers/etc) must send quantity to provider
+    const isPackage = state.serviceType === 'Package';
 
     if (isPackage) {
-        // Package type - create order directly without quantity
         await createOrder(db, ctx, userId, { ...state, link: text }, undefined);
         return;
     }
 
-    // Non-package type - ask for quantity
     await ctx.reply(
         MESSAGES.ENTER_LINK_CONFIRM(text, state.serviceMin!, state.serviceMax!),
         { reply_markup: orderBackKeyboard() }
@@ -323,22 +328,80 @@ async function createOrder(
         return;
     }
 
-    const isDefault = service.type === 'Default';
-    const isPackage = service.type === 'Package';
+    const serviceType = service.type || 'Default';
+    const isPackage = serviceType === 'Package';
+    const quantityValue = isPackage ? 1 : (quantity || 0);
 
-    // Calculate cost for Default and Package types
-    let totalCost = 0;
-    if (isDefault || isPackage) {
-        const rate = parseFloat(service.rate || '0');
-        const quantityValue = isPackage ? 1 : (quantity || 1);
-        totalCost = Math.ceil((quantityValue * rate) / 1000);
+    if (!isPackage && (!quantityValue || quantityValue <= 0)) {
+        await ctx.reply(MESSAGES.INVALID_NUMBER, { reply_markup: helpKeyboard() });
+        orderState.delete(userId);
+        return;
+    }
 
-        TelegramUser.use(db);
-        const user = await TelegramUser.findBy<{ id: number; balance: number }>('chat_id', userId);
+    const totalCost = calculateCustomerCharge(service.rate, quantityValue, serviceType);
+    const storedQuantity = isPackage ? 1 : quantityValue;
 
-        if (!user || (user.balance || 0) < totalCost) {
+    TelegramUser.use(db);
+    const user = await TelegramUser.findBy<{ id: number; balance: number }>('chat_id', userId);
+
+    if (totalCost > 0 && (!user || (user.balance || 0) < totalCost)) {
+        await ctx.reply(
+            MESSAGES.INSUFFICIENT_BALANCE(totalCost, user?.balance || 0),
+            { reply_markup: helpKeyboard() }
+        );
+        orderState.delete(userId);
+        return;
+    }
+
+    let apiOrderId: number | null = null;
+    let apiProviderId: number | null = null;
+
+    // Linked services must be submitted to the provider; never charge for a silent local-only order
+    if (service.api_provider_id && service.api_provider_service_id) {
+        ApiProvider.use(db);
+        const provider = await ApiProvider.findActiveById(service.api_provider_id);
+
+        if (!provider) {
+            await ctx.reply(MESSAGES.PROVIDER_ERROR('ارائه‌دهنده غیرفعال یا یافت نشد'), { reply_markup: helpKeyboard() });
+            orderState.delete(userId);
+            return;
+        }
+
+        try {
+            const api = new SmmApiProvider({
+                apiUrl: provider.api_url,
+                apiKey: provider.api_key,
+            });
+
+            const orderData: {
+                service: number;
+                link: string;
+                quantity?: number;
+            } = {
+                service: service.api_provider_service_id,
+                link: state.link || '',
+            };
+            if (!isPackage) {
+                orderData.quantity = quantityValue;
+            }
+
+            const result = await api.addOrder(orderData);
+
+            if (result.order) {
+                apiOrderId = Number(result.order);
+                apiProviderId = provider.id ?? null;
+            } else {
+                await ctx.reply(
+                    MESSAGES.PROVIDER_ERROR(result.error || 'پاسخ نامعتبر از ارائه‌دهنده'),
+                    { reply_markup: helpKeyboard() }
+                );
+                orderState.delete(userId);
+                return;
+            }
+        } catch (error: any) {
+            console.error('API order error:', error);
             await ctx.reply(
-                MESSAGES.INSUFFICIENT_BALANCE(totalCost, user?.balance || 0),
+                MESSAGES.PROVIDER_ERROR(error?.message || 'خطا در ارتباط با ارائه‌دهنده'),
                 { reply_markup: helpKeyboard() }
             );
             orderState.delete(userId);
@@ -346,51 +409,13 @@ async function createOrder(
         }
     }
 
-    let apiOrderId: number | null = null;
-    let apiProviderId: number | null = null;
-
-    if (service.api_provider_id && service.api_provider_service_id) {
-        ApiProvider.use(db);
-        const provider = await ApiProvider.findActiveById(service.api_provider_id);
-
-        if (provider) {
-            try {
-                const api = new SmmApiProvider({
-                    apiUrl: provider.api_url,
-                    apiKey: provider.api_key,
-                });
-
-                const orderData: any = {
-                    service: service.api_provider_service_id,
-                    link: state.link || '',
-                };
-                if (quantity) orderData.quantity = quantity;
-
-                const result = await api.addOrder(orderData);
-
-                if (result.order) {
-                    apiOrderId = result.order;
-                    apiProviderId = provider.id ?? null;
-                } else if (result.error) {
-                    await ctx.reply(MESSAGES.PROVIDER_ERROR(result.error), { reply_markup: helpKeyboard() });
-                    orderState.delete(userId);
-                    return;
-                }
-            } catch (error: any) {
-                console.error('API order error:', error);
-            }
-        }
-    }
-
     Order.use(db);
-    const rate = parseFloat(service.rate || '0');
-    const quantityValue = isPackage ? 1 : (quantity || 1);
-    const charge = Math.ceil((quantityValue * rate) / 1000);
+    const charge = String(totalCost);
+    const createdAt = nowTehran();
 
-    // Use D1 batch to atomically create order and deduct balance
-    if (totalCost > 0) {
-        try {
-            await db.batch([
+    try {
+        if (totalCost > 0) {
+            const batchResult = await db.batch([
                 db.prepare(
                     `INSERT INTO orders (user_chat_id, user_username, service_id, link, quantity, status, api_provider_id, api_provider_order_id, charge, currency, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
                 ).bind(
@@ -398,41 +423,81 @@ async function createOrder(
                     ctx.from?.username ?? null,
                     state.serviceId,
                     state.link || '',
-                    quantity || null,
+                    storedQuantity,
                     'Pending',
                     apiProviderId,
                     apiOrderId,
-                    String(charge),
+                    charge,
                     'toman',
-                    nowTehran(),
-                    nowTehran()
+                    createdAt,
+                    createdAt
                 ),
                 db.prepare(
-                    'UPDATE telegram_users SET balance = balance - ?, updated_at = ? WHERE chat_id = ?'
-                ).bind(totalCost, nowTehran(), userId),
+                    'UPDATE telegram_users SET balance = balance - ?, updated_at = ? WHERE chat_id = ? AND balance >= ?'
+                ).bind(totalCost, createdAt, userId, totalCost),
             ]);
-        } catch (error: any) {
-            console.error('Atomic order creation failed:', error);
-            await ctx.reply('❌ خطا در ایجاد سفارش. لطفا دوباره تلاش کنید.', { reply_markup: helpKeyboard() });
-            orderState.delete(userId);
-            return;
+
+            const balanceUpdated = batchResult[1]?.meta?.changes ?? 0;
+            if (balanceUpdated < 1) {
+                // Order row may have been inserted; best-effort cleanup to avoid unpaid fulfillment
+                await db.prepare(
+                    `DELETE FROM orders WHERE user_chat_id = ? AND api_provider_order_id IS ? AND created_at = ?`
+                ).bind(userId, apiOrderId, createdAt).run();
+
+                if (apiProviderId && apiOrderId) {
+                    try {
+                        const provider = await ApiProvider.findActiveById(apiProviderId);
+                        if (provider) {
+                            const api = new SmmApiProvider({ apiUrl: provider.api_url, apiKey: provider.api_key });
+                            await api.cancel([apiOrderId]);
+                        }
+                    } catch (cancelError: any) {
+                        console.error('Failed to cancel provider order after balance race:', cancelError);
+                    }
+                }
+
+                await ctx.reply(
+                    MESSAGES.INSUFFICIENT_BALANCE(totalCost, user?.balance || 0),
+                    { reply_markup: helpKeyboard() }
+                );
+                orderState.delete(userId);
+                return;
+            }
+        } else {
+            await Order.create({
+                user_chat_id: userId,
+                user_username: ctx.from?.username ?? null,
+                service_id: state.serviceId,
+                link: state.link || '',
+                quantity: storedQuantity,
+                status: 'Pending',
+                api_provider_id: apiProviderId,
+                api_provider_order_id: apiOrderId,
+                charge,
+                currency: 'toman',
+                created_at: createdAt,
+                updated_at: createdAt,
+            });
         }
-    } else {
-        await Order.create({
-            user_chat_id: userId,
-            user_username: ctx.from?.username ?? null,
-            service_id: state.serviceId,
-            link: state.link || '',
-            quantity: quantity || null,
-            status: 'Pending',
-            api_provider_id: apiProviderId,
-            api_provider_order_id: apiOrderId,
-            charge: String(charge),
-            currency: 'toman',
-        });
+    } catch (error: any) {
+        console.error('Atomic order creation failed:', error);
+        if (apiProviderId && apiOrderId) {
+            try {
+                ApiProvider.use(db);
+                const provider = await ApiProvider.findActiveById(apiProviderId);
+                if (provider) {
+                    const api = new SmmApiProvider({ apiUrl: provider.api_url, apiKey: provider.api_key });
+                    await api.cancel([apiOrderId]);
+                }
+            } catch (cancelError: any) {
+                console.error('Failed to cancel provider order after DB failure:', cancelError);
+            }
+        }
+        await ctx.reply('❌ خطا در ایجاد سفارش. لطفا دوباره تلاش کنید.', { reply_markup: helpKeyboard() });
+        orderState.delete(userId);
+        return;
     }
 
-    // Get the database order ID
     const latestOrder = await Order.rawFirst<{ id: number }>(
         'SELECT id FROM orders WHERE user_chat_id = ? ORDER BY id DESC LIMIT 1',
         userId
@@ -442,7 +507,7 @@ async function createOrder(
     orderState.delete(userId);
 
     await ctx.reply(
-        MESSAGES.ORDER_SUCCESS(state.serviceName, state.link, quantity || 'پکیج', dbOrderId),
+        MESSAGES.ORDER_SUCCESS(state.serviceName, state.link, isPackage ? 'پکیج' : storedQuantity, dbOrderId),
         { parse_mode: 'HTML', reply_markup: helpKeyboard() }
     );
 }

@@ -748,13 +748,11 @@ dashboard.put('/payments/:id/approve', async (c) => {
         Payment.use(c.env.DB);
         const payment = await Payment.find(String(id)) as any;
         if (!payment) return c.json({ error: 'پرداخت یافت نشد' }, 404);
-        if (payment.status !== 'pending') return c.json({ error: 'این پرداخت قبلا بررسی شده' }, 400);
 
-        await Payment.updateStatus(id, 'approved');
-
-        // Update user balance
-        TelegramUser.use(c.env.DB);
-        await TelegramUser.addBalance(payment.user_chat_id, payment.amount);
+        const approved = await Payment.approveAndCredit(id, payment.user_chat_id, payment.amount);
+        if (!approved) {
+            return c.json({ error: 'این پرداخت قبلا بررسی شده یا کاربر یافت نشد' }, 400);
+        }
 
         // Notify user via Telegram
         Setting.use(c.env.DB);
@@ -782,9 +780,9 @@ dashboard.put('/payments/:id/reject', async (c) => {
         Payment.use(c.env.DB);
         const payment = await Payment.find(String(id)) as any;
         if (!payment) return c.json({ error: 'پرداخت یافت نشد' }, 404);
-        if (payment.status !== 'pending') return c.json({ error: 'این پرداخت قبلا بررسی شده' }, 400);
 
-        await Payment.updateStatus(id, 'rejected', reason);
+        const rejected = await Payment.updatePendingStatus(id, 'rejected', reason);
+        if (!rejected) return c.json({ error: 'این پرداخت قبلا بررسی شده' }, 400);
 
         // Notify user via Telegram
         Setting.use(c.env.DB);

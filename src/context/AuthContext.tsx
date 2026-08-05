@@ -46,7 +46,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         user,
         loading,
         login: async (email, password) => {
-            await api('/auth/login', { email, password });
+            const data = await api('/auth/login', { email, password });
+            if (data.role && data.role !== 'admin') {
+                await api('/auth/logout', {});
+                throw new Error('دسترسی داشبورد فقط برای مدیر فعال است');
+            }
             try {
                 setUser(await api('/dashboard/me'));
             } catch {
@@ -58,14 +62,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         },
         signup: async (email, password) => {
             await api('/auth/signup', { email, password });
-            try {
-                setUser(await api('/dashboard/me'));
-            } catch {
-                setUser(null);
-                throw new Error('ثبت‌نام انجام شد ولی نشست تأیید نشد. از صفحه ورود وارد شو.');
-            } finally {
-                setLoading(false);
-            }
+            // Dashboard is admin-only; signup creates a normal user session — clear it
+            await api('/auth/logout', {});
+            throw new Error('حساب ایجاد شد، اما دسترسی داشبورد فقط برای مدیر است. از seed-admin استفاده کنید.');
         },
         logout: async () => {
             await api('/auth/logout', {});

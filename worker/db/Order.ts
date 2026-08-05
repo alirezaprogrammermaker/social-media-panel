@@ -1,4 +1,5 @@
 import { Model } from './Model';
+import { dateTehran, nowTehran } from '../utils/date';
 
 export type OrderStatus = 'Pending' | 'In progress' | 'Completed' | 'Partial' | 'Processing' | 'Canceled';
 
@@ -58,7 +59,7 @@ export class Order extends Model<OrderData> {
     }
 
     static async updateStatus(id: number, status: OrderStatus, data?: Partial<OrderData>): Promise<void> {
-        const updates: Record<string, any> = { status, updated_at: new Date().toISOString() };
+        const updates: Record<string, any> = { status, updated_at: nowTehran() };
         if (data?.charge !== undefined) updates.charge = data.charge;
         if (data?.start_count !== undefined) updates.start_count = data.start_count;
         if (data?.remains !== undefined) updates.remains = data.remains;
@@ -141,13 +142,18 @@ export class Order extends Model<OrderData> {
         today_orders: number;
         yesterday_orders: number;
     }> {
+        const today = dateTehran();
+        const yesterday = dateTehran(-1);
         const result = await this.rawFirst<any>(
             `SELECT 
                 SUM(CASE WHEN status = 'Completed' THEN CAST(charge AS REAL) ELSE 0 END) as total_revenue,
-                SUM(CASE WHEN status = 'Completed' AND date(created_at) = date('now') THEN CAST(charge AS REAL) ELSE 0 END) as today_revenue,
-                COUNT(CASE WHEN date(created_at) = date('now') THEN 1 END) as today_orders,
-                COUNT(CASE WHEN date(created_at) = date('now', '-1 day') THEN 1 END) as yesterday_orders
-             FROM orders`
+                SUM(CASE WHEN status = 'Completed' AND date(created_at) = ? THEN CAST(charge AS REAL) ELSE 0 END) as today_revenue,
+                COUNT(CASE WHEN date(created_at) = ? THEN 1 END) as today_orders,
+                COUNT(CASE WHEN date(created_at) = ? THEN 1 END) as yesterday_orders
+             FROM orders`,
+            today,
+            today,
+            yesterday,
         );
         return result || { total_revenue: 0, today_revenue: 0, today_orders: 0, yesterday_orders: 0 };
     }

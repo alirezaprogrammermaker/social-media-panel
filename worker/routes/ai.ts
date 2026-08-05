@@ -195,7 +195,7 @@ ai.post('/chat', async (c) => {
         AiUsageLog.use(c.env.DB);
         await AiUsageLog.logUsage(userRole, null, maxTokens);
 
-        return c.json({ response: responseText });
+        return c.json({ ok: true, response: responseText });
     } catch (e: any) {
         return c.json({ error: e?.message || 'خطا در پردازش درخواست هوش مصنوعی' }, 500);
     }

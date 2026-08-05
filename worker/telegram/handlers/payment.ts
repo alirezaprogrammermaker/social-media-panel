@@ -384,16 +384,12 @@ export async function handlePaymentApprove(ctx: any, db: D1Database, api: Api, d
         return;
     }
 
-    if (payment.status !== 'pending') {
+    const approved = await Payment.approveAndCredit(paymentId, payment.user_chat_id, payment.amount);
+    if (!approved) {
         await ctx.reply(MESSAGES.PAYMENT_ALREADY_REVIEWED);
         await ctx.answerCallbackQuery();
         return;
     }
-
-    await Payment.updateStatus(paymentId, 'approved');
-
-    TelegramUser.use(db);
-    await TelegramUser.addBalance(payment.user_chat_id, payment.amount);
 
     try {
         await api.sendMessage(payment.user_chat_id, MESSAGES.PAYMENT_APPROVED(payment.amount));
@@ -427,13 +423,12 @@ export async function handlePaymentReject(ctx: any, db: D1Database, api: Api, da
         return;
     }
 
-    if (payment.status !== 'pending') {
+    const rejected = await Payment.updatePendingStatus(paymentId, 'rejected');
+    if (!rejected) {
         await ctx.reply(MESSAGES.PAYMENT_ALREADY_REVIEWED);
         await ctx.answerCallbackQuery();
         return;
     }
-
-    await Payment.updateStatus(paymentId, 'rejected');
 
     try {
         await api.sendMessage(payment.user_chat_id, MESSAGES.PAYMENT_REJECTED(payment.amount));

@@ -1,5 +1,5 @@
 import { Model } from './Model';
-import { nowTehran } from '../utils/date';
+import { dateTehran, nowTehran } from '../utils/date';
 
 export interface AiSettingRow {
     id: number;
@@ -93,11 +93,13 @@ export class AiUsageLog extends Model<AiUsageLogRow> {
     }
 
     static async getTodayUsage(userRole: string): Promise<{ totalTokens: number; totalRequests: number }> {
+        const today = dateTehran();
         const result = await this.rawFirst<{ total_tokens: number; total_requests: number }>(
             `SELECT SUM(tokens_used) as total_tokens, SUM(request_count) as total_requests
              FROM ${this.table}
-             WHERE user_role = ? AND date(created_at) = date('now')`,
+             WHERE user_role = ? AND date(created_at) = ?`,
             userRole,
+            today,
         );
         return {
             totalTokens: result?.total_tokens ?? 0,
@@ -106,11 +108,13 @@ export class AiUsageLog extends Model<AiUsageLogRow> {
     }
 
     static async getTodayUsageByChatId(chatId: number): Promise<{ totalTokens: number; totalRequests: number }> {
+        const today = dateTehran();
         const result = await this.rawFirst<{ total_tokens: number; total_requests: number }>(
             `SELECT SUM(tokens_used) as total_tokens, SUM(request_count) as total_requests
              FROM ${this.table}
-             WHERE chat_id = ? AND date(created_at) = date('now')`,
+             WHERE chat_id = ? AND date(created_at) = ?`,
             chatId,
+            today,
         );
         return {
             totalTokens: result?.total_tokens ?? 0,

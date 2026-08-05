@@ -2,7 +2,6 @@ import { Order } from '../db/Order';
 import type { OrderStatus } from '../db/Order';
 import { ApiProvider } from '../db/ApiProvider';
 import { TelegramUser } from '../db/TelegramUser';
-import { Service } from '../db/Service';
 import { Setting } from '../db/Setting';
 import { SmmApiProvider } from '../api/SmmApiProvider';
 import type { SmmOrderStatus } from '../api/SmmApiProvider';
@@ -16,10 +15,11 @@ interface CheckResult {
     errors: string[];
 }
 
+const TERMINAL_REFUND_STATUSES: OrderStatus[] = ['Canceled', 'Partial'];
+
 export async function checkOrderStatuses(db: D1Database): Promise<CheckResult> {
     Order.use(db);
     ApiProvider.use(db);
-    Service.use(db);
     TelegramUser.use(db);
 
     const errors: string[] = [];
@@ -27,10 +27,36 @@ export async function checkOrderStatuses(db: D1Database): Promise<CheckResult> {
     let updated = 0;
     let refunded = 0;
 
+    // Recover orders charged locally but never submitted (legacy silent provider failures)
+    const orphaned = await Order.raw<any>(
+        `SELECT * FROM orders
+         WHERE status IN ('Pending', 'Processing')
+           AND api_provider_id IS NOT NULL
+           AND api_provider_order_id IS NULL
+           AND CAST(charge AS REAL) > 0
+         LIMIT 50`
+    );
+    for (const order of orphaned) {
+        try {
+            const amount = await applyOrderRefund(db, order, 'Canceled');
+            if (amount > 0) {
+                refunded++;
+                updated++;
+            } else {
+                await Order.updateStatus(order.id!, 'Canceled', {
+                    error_message: order.error_message || 'provider_submit_missing',
+                });
+                updated++;
+            }
+        } catch (error: any) {
+            errors.push(`Orphan order ${order.id}: ${error.message}`);
+        }
+    }
+
     const pendingOrders = await Order.findPendingApiOrders();
 
     if (pendingOrders.length === 0) {
-        return { checked: 0, updated: 0, refunded: 0, errors: [] };
+        return { checked, updated, refunded, errors };
     }
 
     const ordersByProvider = new Map<number, { order: any; apiUrl: string; apiKey: string }[]>();
@@ -53,83 +79,144 @@ export async function checkOrderStatuses(db: D1Database): Promise<CheckResult> {
         const { apiUrl, apiKey } = orders[0];
         const api = new SmmApiProvider({ apiUrl, apiKey });
 
-        const orderIds = orders.map((o) => o.order.api_provider_order_id!);
+        // Chunk to avoid provider multi-status limits
+        const chunks: typeof orders[] = [];
+        for (let i = 0; i < orders.length; i += 100) {
+            chunks.push(orders.slice(i, i + 100));
+        }
 
-        try {
-            const statuses = await api.getMultiOrderStatus(orderIds);
+        for (const chunk of chunks) {
+            const orderIds = chunk.map((o) => o.order.api_provider_order_id!);
 
-            for (const { order } of orders) {
-                const providerOrderId = order.api_provider_order_id!;
-                const statusData = statuses[providerOrderId];
+            try {
+                const statuses = await api.getMultiOrderStatus(orderIds);
 
-                if (!statusData || (statusData as any).error) {
-                    errors.push(`Order ${order.id}: ${(statusData as any)?.error || 'No status data'}`);
-                    continue;
-                }
+                for (const { order } of chunk) {
+                    const providerOrderId = order.api_provider_order_id!;
+                    const statusData =
+                        statuses[String(providerOrderId)] ??
+                        statuses[providerOrderId as unknown as string];
 
-                checked++;
-                const newStatus = SmmApiProvider.mapApiStatus(statusData.status);
+                    if (!statusData || (statusData as any).error) {
+                        errors.push(`Order ${order.id}: ${(statusData as any)?.error || 'No status data'}`);
+                        continue;
+                    }
 
-                if (newStatus !== order.status) {
-                    await Order.updateStatus(order.id!, newStatus, {
-                        charge: statusData.charge,
-                        start_count: statusData.start_count,
-                        remains: statusData.remains,
-                        currency: statusData.currency,
-                    });
-                    updated++;
+                    checked++;
+                    const newStatus = SmmApiProvider.mapApiStatus(statusData.status);
 
-                    // Handle refund for canceled or partial orders
-                    if (newStatus === 'Canceled' || newStatus === 'Partial') {
-                        const refundAmount = await calculateRefund(db, order, newStatus, statusData);
-                        if (refundAmount > 0) {
-                            await TelegramUser.addBalance(order.user_chat_id, refundAmount);
-                            refunded++;
-                            await sendRefundNotification(db, order, newStatus, refundAmount);
-                        }
+                    if (newStatus === order.status) {
+                        continue;
+                    }
+
+                    const refundAmount = await applyOrderRefund(db, order, newStatus, statusData);
+                    if (refundAmount > 0) {
+                        updated++;
+                        refunded++;
+                    } else {
+                        await Order.updateStatus(order.id!, newStatus, {
+                            start_count: statusData.start_count,
+                            remains: statusData.remains,
+                            currency: order.currency || 'toman',
+                        });
+                        updated++;
                     }
                 }
+            } catch (error: any) {
+                errors.push(`Provider ${providerId}: ${error.message}`);
             }
-        } catch (error: any) {
-            errors.push(`Provider ${providerId}: ${error.message}`);
         }
     }
 
     return { checked, updated, refunded, errors };
 }
 
-async function calculateRefund(
-    db: D1Database,
+function isRefundMarked(errorMessage?: string | null): boolean {
+    return typeof errorMessage === 'string' && /^refunded:\d+/.test(errorMessage);
+}
+
+function calculateRefund(
     order: any,
     status: OrderStatus,
-    statusData: SmmOrderStatus
-): Promise<number> {
-    Service.use(db);
-    const service = await Service.find<{ id: number; rate: string; type: string }>(
-        String(order.service_id)
-    );
-
-    if (!service || !order.quantity) {
+    statusData?: SmmOrderStatus
+): number {
+    const originalCharge = parseFloat(order.charge || '0');
+    if (!Number.isFinite(originalCharge) || originalCharge <= 0) {
         return 0;
     }
 
-    const rate = parseFloat(service.rate || '0');
-    const quantity = order.quantity;
-
     if (status === 'Canceled') {
-        // Full refund for canceled orders
-        return Math.ceil((quantity * rate) / 1000);
+        return Math.ceil(originalCharge);
     }
 
     if (status === 'Partial') {
-        // Partial refund based on remains
-        const remains = parseInt(statusData.remains || '0', 10);
-        if (remains > 0) {
-            return Math.ceil((remains * rate) / 1000);
+        const remains = parseInt(statusData?.remains || order.remains || '0', 10);
+        const quantity = parseInt(String(order.quantity || '0'), 10);
+        if (remains > 0 && quantity > 0) {
+            return Math.ceil((originalCharge * remains) / quantity);
         }
     }
 
     return 0;
+}
+
+/** Refund customer balance when an order becomes Canceled/Partial (idempotent via error_message mark). */
+export async function applyOrderRefund(
+    db: D1Database,
+    order: any,
+    newStatus: OrderStatus,
+    statusData?: SmmOrderStatus
+): Promise<number> {
+    Order.use(db);
+    TelegramUser.use(db);
+
+    if (
+        !TERMINAL_REFUND_STATUSES.includes(newStatus) ||
+        TERMINAL_REFUND_STATUSES.includes(order.status as OrderStatus) ||
+        isRefundMarked(order.error_message)
+    ) {
+        return 0;
+    }
+
+    const refundAmount = calculateRefund(order, newStatus, statusData);
+    if (refundAmount <= 0) return 0;
+
+    // Unique mark so a concurrent retry cannot credit against another txn's refund flag
+    const refundMark = `refunded:${refundAmount}:${crypto.randomUUID()}`;
+    const now = nowTehran();
+
+    const batchResult = await db.batch([
+        db.prepare(
+            `UPDATE orders
+             SET status = ?,
+                 start_count = COALESCE(?, start_count),
+                 remains = COALESCE(?, remains),
+                 error_message = ?,
+                 updated_at = ?
+             WHERE id = ?
+               AND status NOT IN ('Canceled', 'Partial')
+               AND (error_message IS NULL OR error_message NOT LIKE 'refunded:%')`
+        ).bind(
+            newStatus,
+            statusData?.start_count ?? null,
+            statusData?.remains ?? null,
+            refundMark,
+            now,
+            order.id!
+        ),
+        db.prepare(
+            `UPDATE telegram_users SET balance = balance + ?, updated_at = ?
+             WHERE chat_id = ?
+               AND EXISTS (SELECT 1 FROM orders WHERE id = ? AND error_message = ?)`
+        ).bind(refundAmount, now, order.user_chat_id, order.id!, refundMark),
+    ]);
+
+    if ((batchResult[0]?.meta?.changes ?? 0) < 1) {
+        return 0;
+    }
+
+    await sendRefundNotification(db, order, newStatus, refundAmount);
+    return refundAmount;
 }
 
 async function sendRefundNotification(

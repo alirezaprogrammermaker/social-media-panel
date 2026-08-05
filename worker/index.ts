@@ -18,28 +18,24 @@ app.route('/api/dashboard', dashboardRoutes);
 app.route('/api/ai', aiRoutes);
 app.route('/api/smm', smmRoutes);
 
-app.get('/api/test-ai', async (c) => {
-    try {
-        const response = await c.env.AI.run('@cf/meta/llama-3.2-11b-vision-instruct', {
-            messages: [
-                { role: 'system', content: 'تو یک دستیار فارسی هستی. فقط به فارسی پاسخ بده.' },
-                { role: 'user', content: 'سلام، حالت چطوره؟' },
-            ],
-            max_tokens: 100,
-        });
-        return c.json({ ok: true, response });
-    } catch (e: any) {
-        return c.json({ error: e.message }, 500);
-    }
-});
+function getTehranHourMinute(date: Date): { hour: number; minute: number } {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Asia/Tehran',
+        hour: 'numeric',
+        minute: 'numeric',
+        hourCycle: 'h23',
+    }).formatToParts(date);
+    return {
+        hour: Number(parts.find((p) => p.type === 'hour')?.value ?? 0),
+        minute: Number(parts.find((p) => p.type === 'minute')?.value ?? 0),
+    };
+}
 
 export default {
     fetch: app.fetch,
     async scheduled(event: ScheduledEvent, env: Bindings): Promise<void> {
         try {
-            const now = new Date(event.scheduledTime);
-            const minute = now.getMinutes();
-            const hour = now.getHours();
+            const { hour, minute } = getTehranHourMinute(new Date(event.scheduledTime));
 
             if (minute % 5 === 0) {
                 console.log('Checking order statuses...');
@@ -54,18 +50,18 @@ export default {
 
                 await syncProviderBalance(env.DB);
                 console.log('Balance sync completed');
+            }
 
-                // Check for daily stats report
-                Setting.use(env.DB);
-                const statsReportEnabled = await Setting.get('stats_report_enabled');
-                const statsReportTime = await Setting.get('stats_report_time') || '20:00';
-                const [reportHour, reportMinute] = statsReportTime.split(':').map(Number);
+            // Stats report: check on every cron tick (*/5) so non-:00 times work
+            Setting.use(env.DB);
+            const statsReportEnabled = await Setting.get('stats_report_enabled');
+            const statsReportTime = await Setting.get('stats_report_time') || '20:00';
+            const [reportHour, reportMinute] = statsReportTime.split(':').map(Number);
 
-                if (statsReportEnabled !== 'false' && hour === reportHour && minute === reportMinute) {
-                    console.log('Sending daily stats report...');
-                    const sent = await sendDailyStatsReport(env.DB);
-                    console.log(`Stats report ${sent ? 'sent' : 'failed'}`);
-                }
+            if (statsReportEnabled !== 'false' && hour === reportHour && minute === reportMinute) {
+                console.log('Sending daily stats report...');
+                const sent = await sendDailyStatsReport(env.DB);
+                console.log(`Stats report ${sent ? 'sent' : 'failed'}`);
             }
         } catch (error: any) {
             console.error('Cron job error:', error.message);

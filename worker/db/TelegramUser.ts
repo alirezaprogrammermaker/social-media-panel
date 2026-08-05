@@ -1,5 +1,5 @@
 import { Model } from './Model';
-import { nowTehran } from '../utils/date';
+import { dateTehran, nowTehran } from '../utils/date';
 
 export interface TelegramUserRow {
     id: number;
@@ -108,18 +108,27 @@ export class TelegramUser extends Model<TelegramUserRow> {
         thisWeek: number;
         thisMonth: number;
     }> {
+        const todayDate = dateTehran();
+        const yesterdayDate = dateTehran(-1);
+        const weekAgo = dateTehran(-7);
+        const monthAgo = dateTehran(-30);
+
         const total = await this.raw('SELECT COUNT(*) as count FROM telegram_users');
         const today = await this.raw(
-            "SELECT COUNT(*) as count FROM telegram_users WHERE date(created_at) = date('now')"
+            'SELECT COUNT(*) as count FROM telegram_users WHERE date(created_at) = ?',
+            todayDate,
         );
         const yesterday = await this.raw(
-            "SELECT COUNT(*) as count FROM telegram_users WHERE date(created_at) = date('now', '-1 day')"
+            'SELECT COUNT(*) as count FROM telegram_users WHERE date(created_at) = ?',
+            yesterdayDate,
         );
         const thisWeek = await this.raw(
-            "SELECT COUNT(*) as count FROM telegram_users WHERE created_at >= datetime('now', '-7 days')"
+            'SELECT COUNT(*) as count FROM telegram_users WHERE date(created_at) >= ?',
+            weekAgo,
         );
         const thisMonth = await this.raw(
-            "SELECT COUNT(*) as count FROM telegram_users WHERE created_at >= datetime('now', '-30 days')"
+            'SELECT COUNT(*) as count FROM telegram_users WHERE date(created_at) >= ?',
+            monthAgo,
         );
 
         return {

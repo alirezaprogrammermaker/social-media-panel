@@ -4,9 +4,12 @@ import { Category } from '../db/Category';
 import { Service } from '../db/Service';
 import { Order } from '../db/Order';
 import { SmmApiProvider } from '../api/SmmApiProvider';
-import { checkOrderStatuses } from '../cron/orderStatusChecker';
+import { applyOrderRefund, checkOrderStatuses } from '../cron/orderStatusChecker';
 import { manualSyncServicesFromProviders, syncProviderBalance } from '../cron/serviceChecker';
 import { requireAuth, requireAdmin } from '../middleware';
+import { TelegramUser } from '../db/TelegramUser';
+import { nowTehran } from '../utils/date';
+import { calculateCustomerCharge } from '../utils/pricing';
 import type { Bindings, Variables } from '../types';
 
 const smm = new Hono<{ Bindings: Bindings; Variables: Variables }>();
@@ -437,47 +440,140 @@ smm.post('/orders', async (c) => {
         const service = await Service.find(String(service_id)) as any;
         if (!service) return c.json({ error: 'سرویس یافت نشد' }, 404);
 
+        const isPackage = (service.type || 'Default') === 'Package';
+        if (!isPackage && (!quantity || quantity <= 0)) {
+            return c.json({ error: 'تعداد برای این سرویس الزامی است' }, 400);
+        }
+
+        const quantityValue = isPackage ? 1 : Number(quantity);
+        const charge = calculateCustomerCharge(service.rate, quantityValue, service.type);
+
+        TelegramUser.use(c.env.DB);
+        const user = await TelegramUser.findBy<{ chat_id: number; balance: number }>('chat_id', user_chat_id);
+        if (!user) {
+            return c.json({ error: 'کاربر تلگرام یافت نشد' }, 404);
+        }
+        if (charge > 0 && (user.balance || 0) < charge) {
+            return c.json({ error: 'موجودی کاربر کافی نیست' }, 400);
+        }
+
         let apiOrderId: number | null = null;
         let apiProviderId: number | null = null;
 
         if (service.api_provider_id && service.api_provider_service_id) {
             ApiProvider.use(c.env.DB);
-            const provider = await ApiProvider.find(String(service.api_provider_id)) as any;
-            if (provider && provider.is_active) {
-                const api = new SmmApiProvider({
-                    apiUrl: provider.api_url,
-                    apiKey: provider.api_key,
-                });
+            const provider = await ApiProvider.findActiveById(service.api_provider_id);
+            if (!provider) {
+                return c.json({ error: 'ارائه‌دهنده غیرفعال یا یافت نشد' }, 400);
+            }
 
-                const orderData: any = {
-                    service: service.api_provider_service_id,
-                    link,
-                };
-                if (quantity) orderData.quantity = quantity;
+            const api = new SmmApiProvider({
+                apiUrl: provider.api_url,
+                apiKey: provider.api_key,
+            });
 
-                const result = await api.addOrder(orderData);
+            const orderData: {
+                service: number;
+                link: string;
+                quantity?: number;
+            } = {
+                service: service.api_provider_service_id,
+                link,
+            };
+            if (!isPackage && quantity) {
+                orderData.quantity = quantity;
+            }
 
-                if (result.order) {
-                    apiOrderId = result.order;
-                    apiProviderId = provider.id;
-                } else if (result.error) {
-                    return c.json({ error: `خطا از ارائه‌دهنده: ${result.error}` }, 400);
-                }
+            const result = await api.addOrder(orderData);
+
+            if (result.order) {
+                apiOrderId = Number(result.order);
+                apiProviderId = provider.id ?? null;
+            } else {
+                return c.json({ error: `خطا از ارائه‌دهنده: ${result.error || 'پاسخ نامعتبر'}` }, 400);
             }
         }
 
         Order.use(c.env.DB);
-        const order = await Order.create({
-            user_chat_id,
-            service_id,
-            link,
-            quantity,
-            status: apiOrderId ? 'Pending' : 'Pending',
-            api_provider_id: apiProviderId,
-            api_provider_order_id: apiOrderId,
-            charge: quantity ? String(Math.ceil((quantity * parseFloat(service.rate || '0')) / 1000)) : null,
-            currency: 'toman',
-        });
+        const createdAt = nowTehran();
+
+        try {
+            if (charge > 0) {
+                const batchResult = await c.env.DB.batch([
+                    c.env.DB.prepare(
+                        `INSERT INTO orders (user_chat_id, service_id, link, quantity, status, api_provider_id, api_provider_order_id, charge, currency, created_at, updated_at)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                    ).bind(
+                        user_chat_id,
+                        service_id,
+                        link,
+                        quantityValue,
+                        'Pending',
+                        apiProviderId,
+                        apiOrderId,
+                        String(charge),
+                        'toman',
+                        createdAt,
+                        createdAt
+                    ),
+                    c.env.DB.prepare(
+                        'UPDATE telegram_users SET balance = balance - ?, updated_at = ? WHERE chat_id = ? AND balance >= ?'
+                    ).bind(charge, createdAt, user_chat_id, charge),
+                ]);
+
+                if ((batchResult[1]?.meta?.changes ?? 0) < 1) {
+                    await c.env.DB.prepare(
+                        `DELETE FROM orders WHERE user_chat_id = ? AND api_provider_order_id IS ? AND created_at = ?`
+                    ).bind(user_chat_id, apiOrderId, createdAt).run();
+
+                    if (apiProviderId && apiOrderId) {
+                        try {
+                            const provider = await ApiProvider.findActiveById(apiProviderId);
+                            if (provider) {
+                                const api = new SmmApiProvider({ apiUrl: provider.api_url, apiKey: provider.api_key });
+                                await api.cancel([apiOrderId]);
+                            }
+                        } catch (cancelError: any) {
+                            console.error('Failed to cancel provider order after balance race:', cancelError);
+                        }
+                    }
+                    return c.json({ error: 'موجودی کاربر کافی نیست' }, 400);
+                }
+            } else {
+                await Order.create({
+                    user_chat_id,
+                    service_id,
+                    link,
+                    quantity: quantityValue,
+                    status: 'Pending',
+                    api_provider_id: apiProviderId,
+                    api_provider_order_id: apiOrderId,
+                    charge: String(charge),
+                    currency: 'toman',
+                    created_at: createdAt,
+                    updated_at: createdAt,
+                });
+            }
+        } catch (dbError: any) {
+            if (apiProviderId && apiOrderId) {
+                try {
+                    ApiProvider.use(c.env.DB);
+                    const provider = await ApiProvider.findActiveById(apiProviderId);
+                    if (provider) {
+                        const api = new SmmApiProvider({ apiUrl: provider.api_url, apiKey: provider.api_key });
+                        await api.cancel([apiOrderId]);
+                    }
+                } catch (cancelError: any) {
+                    console.error('Failed to cancel provider order after DB failure:', cancelError);
+                }
+            }
+            throw dbError;
+        }
+
+        const order = await Order.rawFirst(
+            'SELECT * FROM orders WHERE user_chat_id = ? ORDER BY id DESC LIMIT 1',
+            user_chat_id
+        );
 
         return c.json({ ok: true, order });
     } catch (e: any) {
@@ -499,6 +595,13 @@ smm.put('/orders/:id/status', async (c) => {
         const order = await Order.find(String(id)) as any;
         if (!order) return c.json({ error: 'سفارش یافت نشد' }, 404);
 
+        if (status === 'Canceled' || status === 'Partial') {
+            const refunded = await applyOrderRefund(c.env.DB, order, status as any);
+            if (refunded > 0) {
+                return c.json({ ok: true, refunded });
+            }
+        }
+
         await Order.updateStatus(id, status as any);
         return c.json({ ok: true });
     } catch (e: any) {
@@ -513,6 +616,10 @@ smm.put('/orders/:id/cancel', async (c) => {
         const order = await Order.find(String(id)) as any;
         if (!order) return c.json({ error: 'سفارش یافت نشد' }, 404);
 
+        if (order.status === 'Canceled') {
+            return c.json({ ok: true, already: true });
+        }
+
         if (order.api_provider_id && order.api_provider_order_id) {
             ApiProvider.use(c.env.DB);
             const provider = await ApiProvider.find(String(order.api_provider_id)) as any;
@@ -521,12 +628,19 @@ smm.put('/orders/:id/cancel', async (c) => {
                     apiUrl: provider.api_url,
                     apiKey: provider.api_key,
                 });
-                await api.cancel([order.api_provider_order_id]);
+                try {
+                    await api.cancel([order.api_provider_order_id]);
+                } catch (cancelError: any) {
+                    console.error('Provider cancel failed:', cancelError?.message);
+                }
             }
         }
 
-        await Order.updateStatus(id, 'Canceled');
-        return c.json({ ok: true });
+        const refunded = await applyOrderRefund(c.env.DB, order, 'Canceled');
+        if (refunded <= 0) {
+            await Order.updateStatus(id, 'Canceled');
+        }
+        return c.json({ ok: true, refunded });
     } catch (e: any) {
         return c.json({ error: e?.message || 'خطا در لغو سفارش' }, 500);
     }

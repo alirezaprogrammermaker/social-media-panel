@@ -48,13 +48,14 @@ telegram.post('/webhook', async (c) => {
         const token = await Setting.get('telegram_token');
         if (!token) return c.text('no token', 400);
 
-        // Validate webhook secret token
+        // Validate webhook secret token (fail closed)
         const webhookSecret = await Setting.get('telegram_webhook_secret');
-        if (webhookSecret) {
-            const requestSecret = c.req.header('X-Telegram-Bot-Api-Secret-Token');
-            if (requestSecret !== webhookSecret) {
-                return c.text('unauthorized', 403);
-            }
+        if (!webhookSecret) {
+            return c.text('webhook secret not configured', 403);
+        }
+        const requestSecret = c.req.header('X-Telegram-Bot-Api-Secret-Token');
+        if (requestSecret !== webhookSecret) {
+            return c.text('unauthorized', 403);
         }
 
         const bot = new Bot(token);

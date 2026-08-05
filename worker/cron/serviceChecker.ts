@@ -100,10 +100,10 @@ export async function syncServicesFromProviders(db: D1Database): Promise<SyncRes
                     categoryCache.set(remote.category, categoryId);
                 }
 
+                // Keep local selling `rate` (customer price); only sync provider cost/metadata
                 await Service.update(String(existing.id!), {
                     name: remote.name,
                     type: remote.type,
-                    rate: remote.rate,
                     min: remote.min,
                     max: remote.max,
                     refill: remote.refill,
@@ -226,10 +226,10 @@ export async function manualSyncServicesFromProviders(db: D1Database): Promise<S
                     categoryCache.set(remote.category, categoryId);
                 }
 
+                // Keep local selling `rate` (customer price); only sync provider cost/metadata
                 await Service.update(String(existing.id!), {
                     name: remote.name,
                     type: remote.type,
-                    rate: remote.rate,
                     min: remote.min,
                     max: remote.max,
                     refill: remote.refill,

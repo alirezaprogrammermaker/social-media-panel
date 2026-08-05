@@ -65,6 +65,11 @@ export class Model<T extends Record<string, any>> {
 
     static async update(this: any, id: string, data: Record<string, any>) {
         const columns = Object.keys(data);
+        for (const c of columns) {
+            if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(c)) {
+                throw new Error(`نام ستون نامعتبر: ${c}`);
+            }
+        }
         const setClause = columns.map((c) => `${c} = ?`).join(', ');
         await this.db
             .prepare(`UPDATE ${this.table} SET ${setClause} WHERE id = ?`)
