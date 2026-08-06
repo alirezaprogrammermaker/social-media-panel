@@ -15,6 +15,7 @@ export const BUTTONS = {
     BACK_TO_ORDERS: '🔙 بازگشت به لیست',
     CANCEL_ORDER: '❌ لغو سفارش',
     CANCEL_PAYMENT: '❌ لغو افزایش موجودی',
+    CHECK_CRYPTO_STATUS: '🔄 بررسی وضعیت پرداخت کریپتو',
 } as const;
 
 // Messages
@@ -94,6 +95,38 @@ export const MESSAGES = {
     MAX_AMOUNT: (max: number) => `❌ حداکثر مبلغ پرداخت: ${max.toLocaleString()} تومان`,
     PAYMENT_NOT_FOUND: 'پرداخت یافت نشد.',
     PAYMENT_ALREADY_REVIEWED: 'این پرداخت قبلا بررسی شده است.',
+
+    // Crypto payment
+    SELECT_CRYPTO_NETWORK: '🌐 شبکه پرداخت کریپتو را انتخاب کنید:\n(پیشنهادی: USDT TRC20)',
+    CRYPTO_GATEWAY_NOT_CONFIGURED: '❌ درگاه کریپتو پیکربندی نشده است. با مدیر تماس بگیرید.',
+    CRYPTO_DOLLAR_RATE_MISSING: '❌ نرخ دلار تنظیم نشده است. لطفاً بعداً تلاش کنید.',
+    CRYPTO_CREATE_FAILED: (error: string) => `❌ ایجاد پرداخت کریپتو ناموفق بود.\n\n${error}`,
+    CRYPTO_PAYMENT_CREATED: (
+        amountToman: number,
+        cryptoAmount: string,
+        networkLabel: string,
+        address: string,
+        checkoutUrl: string,
+        expiresAt: string,
+    ) =>
+        `💎 <b>پرداخت کریپتو ایجاد شد</b>\n\n` +
+        `💰 مبلغ شارژ: <b>${amountToman.toLocaleString()} تومان</b>\n` +
+        `🪙 مبلغ کریپتو: <code>${cryptoAmount}</code>\n` +
+        `🌐 شبکه: <b>${networkLabel}</b>\n` +
+        `📬 آدرس واریز:\n<code>${address}</code>\n\n` +
+        `🔗 صفحه پرداخت:\n${checkoutUrl}\n\n` +
+        `⏰ مهلت: ${expiresAt}\n\n` +
+        `پس از واریز، موجودی به‌صورت خودکار شارژ می‌شود.\n` +
+        `می‌توانید وضعیت را با دکمه زیر بررسی کنید.`,
+    CRYPTO_PAYMENT_CONFIRMED: (amount: number) =>
+        `✅ پرداخت کریپتو تایید شد!\n\nمبلغ: ${amount.toLocaleString()} تومان\nموجودی شما بروزرسانی شد.`,
+    CRYPTO_PAYMENT_EXPIRED:
+        '⏰ مهلت پرداخت کریپتو به پایان رسید.\nبرای شارژ مجدد از منو «افزایش موجودی» را بزنید.',
+    CRYPTO_PAYMENT_FAILED:
+        '❌ پرداخت کریپتو ناموفق بود.\nبرای تلاش مجدد از منو «افزایش موجودی» را بزنید.',
+    CRYPTO_STILL_PENDING: (status: string) =>
+        `⏳ پرداخت هنوز نهایی نشده است.\nوضعیت درگاه: <code>${status}</code>`,
+    CRYPTO_NO_PENDING: 'پرداخت کریپتوی در انتظاری یافت نشد.',
 
     // My Orders
     MY_ORDERS_TITLE: '📦 <b>سفارشات من</b>',

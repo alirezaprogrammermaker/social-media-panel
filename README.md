@@ -22,6 +22,7 @@ A full-featured **SMM (Social Media Marketing) panel** built on **Cloudflare Wor
 - **Order management** — status tracking, bulk status check, cancellation
 - **SMM Service management** — categories, services, API provider sync
 - **Payment system** — multiple payment methods, receipt verification, approve/reject flow
+- **Crypto top-up** — USDT/BTC/ETH via personal Crypto Payment Gateway (webhook + cron poll)
 - **AI settings** — configure LLM models, prompts, daily limits per role
 - **Export/Import** — full database backup and restore as JSON
 - **Daily reports** — automated stats reports via Telegram
@@ -29,7 +30,7 @@ A full-featured **SMM (Social Media Marketing) panel** built on **Cloudflare Wor
 ### 🤖 Telegram Bot
 - **User registration** with mandatory channel membership verification
 - **Order placement** — category → service → link → quantity flow
-- **Balance top-up** — payment method selection, receipt upload with AI validation
+- **Balance top-up** — card-to-card with AI receipt check, or crypto (default USDT TRC20)
 - **AI chat** — integrated LLM with configurable system prompts
 - **Profile & order history** — balance, stats, order tracking
 - **Anti-spam** — rate limiting and automated blocking
@@ -92,9 +93,12 @@ pnpm install
 cp .env.example .dev.vars
 ```
 
-Edit `.dev.vars` and set your secret:
+Edit `.dev.vars` and set your secrets:
 ```env
 SEED_ADMIN_SECRET=your-random-secret-here
+# Optional — Crypto Payment Gateway (from gateway /admin/api-keys and /admin/webhooks)
+CRYPTO_GATEWAY_API_KEY=cg_your_key
+CRYPTO_GATEWAY_WEBHOOK_SECRET=your_webhook_secret
 ```
 
 Generate a random secret:
@@ -157,9 +161,15 @@ curl -X POST http://localhost:5173/api/auth/seed-admin \
 # Set the seed admin secret as a Wrangler secret
 wrangler secret put SEED_ADMIN_SECRET
 
+# Optional: Crypto Payment Gateway secrets (never mnemonic / private keys)
+wrangler secret put CRYPTO_GATEWAY_API_KEY
+wrangler secret put CRYPTO_GATEWAY_WEBHOOK_SECRET
+
 # Build and deploy
 pnpm deploy
 ```
+
+`CRYPTO_GATEWAY_BASE_URL` defaults to `https://crypto-gateway.social-panel.workers.dev` via `wrangler.jsonc` `vars`.
 
 ### Set up Telegram Bot
 
@@ -176,6 +186,31 @@ pnpm deploy
 2. Click **Activate** to enable the Llama 3.2 Vision model
 3. Configure the receipt analysis prompt
 
+### Crypto Payment Gateway
+
+Personal gateway at `https://crypto-gateway.social-panel.workers.dev` (API: `/api/v1`).  
+This panel never stores or requests mnemonic / private keys — only the public merchant API (`Bearer cg_...`).
+
+1. In the gateway admin: set Tatum + XPUBs, enable networks, create an API key (`/admin/api-keys`)
+2. Set secrets on this worker: `CRYPTO_GATEWAY_API_KEY`, `CRYPTO_GATEWAY_WEBHOOK_SECRET`
+3. Register an outgoing webhook in gateway **`/admin/webhooks`**:
+   - URL: `https://YOUR_WORKER.workers.dev/api/crypto-gateway/webhook`
+   - Events: `payment.created`, `payment.confirmed`, `payment.expired`, `payment.failed`
+   - Use the same secret as `CRYPTO_GATEWAY_WEBHOOK_SECRET` (header `X-Signature` = HMAC-SHA256 hex of raw body)
+4. Set **نرخ دلار** in dashboard Settings (toman per 1 USD) — used to convert user toman top-up → gateway USD amount
+5. Apply migration `0023_crypto_payments.sql` if not already applied
+
+**Default network:** `usdt-trc20` (Solana is not offered in the bot).  
+**`callback_url` on create** is only a checkout return link — confirmation uses the merchant webhook + a 5‑minute cron poll fallback.  
+Dashboard **Payments** shows gateway id, wallet, crypto amount, tx hash, checkout URL, confirmations, with a **Refresh** action (`GET` status from gateway).
+
+**Quick test checklist**
+1. `GET /api/crypto-gateway/health` (or gateway `/health`) → ok
+2. Bot → افزایش موجودی → پرداخت کریپتو → network → amount (small)
+3. Open `checkout_url` / copy address — do not need a real on-chain tx for create/status=pending
+4. Confirm webhook signature rejects bad `X-Signature`
+5. On `payment.confirmed` (or cron refresh) balance credits once only
+
 ---
 
 ## ⏱️ Cron Jobs
@@ -184,7 +219,7 @@ Configured in `wrangler.jsonc` (`*/5 * * * *` and a secondary trigger). The Work
 
 | Cadence (Tehran) | Behavior |
 |------------------|----------|
-| Every 5 minutes | Poll provider order statuses; refund **Canceled** / **Partial**; recover charged orders missing `api_provider_order_id` |
+| Every 5 minutes | Poll provider order statuses; refund **Canceled** / **Partial**; recover charged orders missing `api_provider_order_id`; poll pending **crypto** payments (gateway status → credit/expire) |
 | Every hour (`:00`) | Sync provider service catalogs (keeps local selling `rate`; updates `api_provider_service_price`) and provider balances |
 | Configurable daily time | Optional Telegram daily stats report (`stats_report_enabled` / `stats_report_time`) |
 
@@ -198,6 +233,7 @@ Configured in `wrangler.jsonc` (`*/5 * * * *` and a secondary trigger). The Work
 - **`services.api_provider_service_price`** — provider cost (usually USD from the API). Hourly sync updates this field and metadata; it does **not** overwrite your selling `rate`.
 - Orders linked to a provider are submitted to the API **before** charging the user. Failed provider calls do not create a paid local order. Admin cancel / provider cancel&partial paths refund using the stored order `charge`.
 - Dashboard **Approve payment** and Telegram admin approve credit balance only while the payment is still `pending` (atomic batch).
+- Crypto confirmations use the same idempotent pattern (`confirmCryptoAndCredit`) so webhook + poll cannot double-credit.
 
 ---
 
@@ -249,7 +285,7 @@ Configured in `wrangler.jsonc` (`*/5 * * * *` and a secondary trigger). The Work
 │   ├── middleware.ts             # Auth middleware
 │   └── types.ts                  # TypeScript types
 │
-├── migrations/                   # D1 SQL migrations (22 files)
+├── migrations/                   # D1 SQL migrations (23 files)
 ├── scripts/
 │   └── gen-hash.mjs              # Password hash generator
 ├── .github/workflows/ci.yml     # GitHub Actions CI
@@ -274,7 +310,7 @@ Configured in `wrangler.jsonc` (`*/5 * * * *` and a secondary trigger). The Work
 
 ## 📊 Database Schema
 
-The project uses **22 migrations** with the following main tables:
+The project uses **23 migrations** with the following main tables:
 
 | Table | Description |
 |-------|-------------|
@@ -292,18 +328,19 @@ The project uses **22 migrations** with the following main tables:
 | `categories` | Service categories |
 | `services` | SMM services |
 | `orders` | User orders |
-| `payment_methods` | Payment methods (cards) |
-| `payments` | Payment transactions |
+| `payment_methods` | Payment methods (cards + crypto sentinel) |
+| `payments` | Payment transactions (card + crypto gateway fields) |
 
 ---
 
 ## 🔐 Security Notes
 
 - **Never commit** your `.dev.vars` or `.env` files
-- **Use Wrangler secrets** for production: `wrangler secret put SEED_ADMIN_SECRET`
+- **Use Wrangler secrets** for production: `wrangler secret put SEED_ADMIN_SECRET` (and crypto gateway secrets if used)
 - The `/api/auth/seed-admin` endpoint requires a secret key
 - All `/api/dashboard`, `/api/smm`, and `/api/ai` routes require an authenticated **admin** session (HTTP-only cookie)
 - Telegram webhook validates the `X-Telegram-Bot-Api-Secret-Token` header and refuses traffic when no secret is configured
+- Crypto gateway merchant webhook verifies `X-Signature` (HMAC-SHA256) with `CRYPTO_GATEWAY_WEBHOOK_SECRET`
 - Passwords are hashed with PBKDF2 (100k iterations, SHA-256)
 - Signup creates a normal user only; the React dashboard is admin-only (use `seed-admin` for the first admin)
 

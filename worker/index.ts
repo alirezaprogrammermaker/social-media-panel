@@ -4,9 +4,11 @@ import telegramBot from './telegram';
 import dashboardRoutes from './routes/dashboard';
 import aiRoutes from './routes/ai';
 import smmRoutes from './routes/smm';
+import cryptoGatewayRoutes from './routes/cryptoGateway';
 import { checkOrderStatuses } from './cron/orderStatusChecker';
 import { syncServicesFromProviders, syncProviderBalance } from './cron/serviceChecker';
 import { sendDailyStatsReport } from './cron/statsReporter';
+import { pollPendingCryptoPayments } from './services/cryptoPayment';
 import { Setting } from './db/Setting';
 import type { Bindings, Variables } from './types';
 
@@ -17,6 +19,7 @@ app.route('/api/telegram', telegramBot);
 app.route('/api/dashboard', dashboardRoutes);
 app.route('/api/ai', aiRoutes);
 app.route('/api/smm', smmRoutes);
+app.route('/api/crypto-gateway', cryptoGatewayRoutes);
 
 function getTehranHourMinute(date: Date): { hour: number; minute: number } {
     const parts = new Intl.DateTimeFormat('en-GB', {
@@ -41,6 +44,10 @@ export default {
                 console.log('Checking order statuses...');
                 const result = await checkOrderStatuses(env.DB);
                 console.log(`Order check: ${result.checked} checked, ${result.updated} updated, ${result.refunded} refunded`);
+
+                console.log('Polling pending crypto payments...');
+                const cryptoResult = await pollPendingCryptoPayments(env);
+                console.log(`Crypto poll: ${cryptoResult.checked} checked, ${cryptoResult.credited} credited, ${cryptoResult.expired} expired/failed`);
             }
 
             if (minute === 0) {

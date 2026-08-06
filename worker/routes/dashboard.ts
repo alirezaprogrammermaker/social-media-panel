@@ -730,9 +730,15 @@ dashboard.delete('/payment-methods/:id', async (c) => {
 dashboard.get('/payments', async (c) => {
     Payment.use(c.env.DB);
     const status = c.req.query('status');
-    const payments = status
+    const type = c.req.query('type');
+    let payments = status
         ? await Payment.findByStatus(status)
         : await Payment.findAllOrdered();
+    if (type === 'crypto') {
+        payments = payments.filter((p: any) => p.payment_type === 'crypto');
+    } else if (type === 'card') {
+        payments = payments.filter((p: any) => (p.payment_type || 'card') === 'card');
+    }
     return c.json(payments);
 });
 
@@ -740,6 +746,35 @@ dashboard.get('/payments/stats', async (c) => {
     Payment.use(c.env.DB);
     const stats = await Payment.getStats();
     return c.json(stats);
+});
+
+dashboard.post('/payments/:id/refresh-crypto', async (c) => {
+    try {
+        const id = Number(c.req.param('id'));
+        const { refreshLocalCryptoPayment } = await import('../services/cryptoPayment');
+        const result = await refreshLocalCryptoPayment(c.env.DB, c.env, id, false);
+        if (!result.ok) return c.json({ error: result.error || 'خطا' }, 400);
+        return c.json({ ok: true, payment: result.payment, result: result.result });
+    } catch (e: any) {
+        return c.json({ error: e?.message || 'خطا در بروزرسانی وضعیت کریپتو' }, 500);
+    }
+});
+
+dashboard.get('/crypto-gateway/health', async (c) => {
+    try {
+        const { healthCheck, CRYPTO_GATEWAY_DEFAULT_BASE, isCryptoGatewayConfigured } = await import('../api/CryptoGateway');
+        const base = c.env.CRYPTO_GATEWAY_BASE_URL || CRYPTO_GATEWAY_DEFAULT_BASE;
+        const health = await healthCheck(base);
+        return c.json({
+            configured: isCryptoGatewayConfigured(c.env),
+            hasWebhookSecret: !!c.env.CRYPTO_GATEWAY_WEBHOOK_SECRET?.trim(),
+            baseUrl: base,
+            webhookUrlHint: '/api/crypto-gateway/webhook',
+            health,
+        });
+    } catch (e: any) {
+        return c.json({ error: e?.message || 'خطا در بررسی درگاه' }, 500);
+    }
 });
 
 dashboard.put('/payments/:id/approve', async (c) => {

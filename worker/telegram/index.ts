@@ -29,6 +29,8 @@ import {
     handlePaymentBack,
     handlePaymentApprove,
     handlePaymentReject,
+    handleCryptoNetworkSelect,
+    handleCryptoStatusCheck,
 } from './handlers/payment';
 import {
     handleMyOrders,
@@ -113,7 +115,7 @@ telegram.post('/webhook', async (c) => {
 
                     // Check payment back
                     if (paymentState.has(userId)) {
-                        const handled = await handlePaymentBack(ctx, c.env.DB, userId);
+                        const handled = await handlePaymentBack(ctx, c.env.DB, userId, c.env);
                         if (handled) return;
                     }
 
@@ -140,7 +142,7 @@ telegram.post('/webhook', async (c) => {
                 }
 
                 if (text === BUTTONS.ADD_BALANCE) {
-                    await handleAddBalance(ctx, c.env.DB);
+                    await handleAddBalance(ctx, c.env.DB, c.env);
                     return;
                 }
 
@@ -232,14 +234,24 @@ telegram.post('/webhook', async (c) => {
                     return;
                 }
 
+                if (text === BUTTONS.CHECK_CRYPTO_STATUS) {
+                    await handleCryptoStatusCheck(ctx, c.env.DB, c.env, userId);
+                    return;
+                }
+
                 const state = paymentState.get(userId);
                 if (state?.step === 'method' && text && !aiChatState.has(userId)) {
-                    const handled = await handlePaymentMethodSelect(ctx, c.env.DB, userId, text);
+                    const handled = await handlePaymentMethodSelect(ctx, c.env.DB, userId, text, c.env);
+                    if (handled) return;
+                }
+
+                if (state?.step === 'crypto_network' && text && !aiChatState.has(userId)) {
+                    const handled = await handleCryptoNetworkSelect(ctx, userId, text);
                     if (handled) return;
                 }
 
                 if (state?.step === 'amount' && text && !aiChatState.has(userId)) {
-                    await handlePaymentAmount(ctx, userId, text);
+                    await handlePaymentAmount(ctx, userId, text, c.env.DB, c.env);
                     return;
                 }
 

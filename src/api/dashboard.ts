@@ -91,8 +91,12 @@ class DashboardApi extends BaseApi {
     }
 
     // Payments
-    async getPayments(status?: string) {
-        const url = status ? `/payments?status=${status}` : '/payments';
+    async getPayments(status?: string, type?: string) {
+        const params = new URLSearchParams();
+        if (status) params.set('status', status);
+        if (type) params.set('type', type);
+        const qs = params.toString();
+        const url = qs ? `/payments?${qs}` : '/payments';
         return this.get<any[]>(url);
     }
 
@@ -110,6 +114,14 @@ class DashboardApi extends BaseApi {
 
     async deletePayment(id: number) {
         return this.delete<any>(`/payments/${id}`);
+    }
+
+    async refreshCryptoPayment(id: number) {
+        return this.post<any>(`/payments/${id}/refresh-crypto`, {});
+    }
+
+    async getCryptoGatewayHealth() {
+        return this.get<any>('/crypto-gateway/health');
     }
 
     // Bot Channels

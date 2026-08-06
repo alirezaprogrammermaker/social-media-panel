@@ -33,7 +33,7 @@ export function isSpamming(userId: number): boolean {
 
 // Payment state
 export const paymentState = new Map<number, {
-    step: 'method' | 'amount' | 'receipt';
+    step: 'method' | 'crypto_network' | 'amount' | 'receipt' | 'crypto_waiting';
     methodId?: number;
     methodName?: string;
     cardNumber?: string;
@@ -41,6 +41,9 @@ export const paymentState = new Map<number, {
     minAmount?: number;
     maxAmount?: number;
     amount?: number;
+    isCrypto?: boolean;
+    networkId?: string;
+    localPaymentId?: number;
 }>();
 
 // AI chat state

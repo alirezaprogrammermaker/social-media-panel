@@ -4,8 +4,27 @@ import { Payment } from '../../db/Payment';
 import { TelegramUser } from '../../db/TelegramUser';
 import { Setting } from '../../db/Setting';
 import { paymentState } from '../state';
-import { helpKeyboard, paymentMethodKeyboard, paymentAmountKeyboard, paymentReceiptKeyboard } from '../keyboards';
+import {
+    helpKeyboard,
+    paymentMethodKeyboard,
+    paymentAmountKeyboard,
+    paymentReceiptKeyboard,
+    cryptoNetworkKeyboard,
+    cryptoWaitingKeyboard,
+} from '../keyboards';
 import { MESSAGES } from '../constants';
+import {
+    CRYPTO_NETWORKS,
+    DEFAULT_CRYPTO_NETWORK,
+    createPayment as createGatewayPayment,
+    gatewayConfigFromEnv,
+    isCryptoGatewayConfigured,
+    networkLabel,
+    CryptoGatewayError,
+} from '../../api/CryptoGateway';
+import { refreshLocalCryptoPayment } from '../../services/cryptoPayment';
+import type { Bindings } from '../../types';
+import { nowTehran } from '../../utils/date';
 
 // Track invalid receipt attempts per user
 const invalidReceiptAttempts = new Map<number, { count: number; bannedUntil: number }>();
@@ -98,7 +117,7 @@ function getBanRemaining(userId: number): number {
 }
 
 // Step 1: Show payment methods
-export async function handleAddBalance(ctx: any, db: D1Database) {
+export async function handleAddBalance(ctx: any, db: D1Database, env?: Bindings) {
     const userId = ctx.from?.id;
     if (!userId) return;
 
@@ -109,7 +128,15 @@ export async function handleAddBalance(ctx: any, db: D1Database) {
     }
 
     PaymentMethod.use(db);
-    const methods = await PaymentMethod.getActiveMethods();
+    let methods = await PaymentMethod.getActiveMethods();
+    const cryptoMethod = await PaymentMethod.findCryptoMethod();
+    const cryptoEnabled = env ? isCryptoGatewayConfigured(env) : false;
+
+    // Only expose crypto method when API key is configured
+    methods = methods.filter((m) => !PaymentMethod.isCryptoMethod(m));
+    if (cryptoEnabled && cryptoMethod) {
+        methods = [cryptoMethod, ...methods];
+    }
 
     if (methods.length === 0) {
         await ctx.reply(MESSAGES.NO_PAYMENT_METHODS, { reply_markup: helpKeyboard() });
@@ -121,16 +148,48 @@ export async function handleAddBalance(ctx: any, db: D1Database) {
 }
 
 // Step 2: Handle payment method selection
-export async function handlePaymentMethodSelect(ctx: any, db: D1Database, userId: number, text: string) {
+export async function handlePaymentMethodSelect(ctx: any, db: D1Database, userId: number, text: string, env?: Bindings) {
     const state = paymentState.get(userId);
     if (!state || state.step !== 'method') return false;
 
     PaymentMethod.use(db);
-    const methods = await PaymentMethod.getActiveMethods();
+    let methods = await PaymentMethod.getActiveMethods();
+    const cryptoMethod = await PaymentMethod.findCryptoMethod();
+    const cryptoEnabled = env ? isCryptoGatewayConfigured(env) : false;
+    methods = methods.filter((m) => !PaymentMethod.isCryptoMethod(m));
+    if (cryptoEnabled && cryptoMethod) {
+        methods = [cryptoMethod, ...methods];
+    }
+
     const selected = methods.find((m) => text === m.name);
 
     if (!selected) {
         await ctx.reply('لطفاً یک روش پرداخت انتخاب کنید.', { reply_markup: paymentMethodKeyboard(methods) });
+        return true;
+    }
+
+    if (PaymentMethod.isCryptoMethod(selected)) {
+        if (!env || !isCryptoGatewayConfigured(env)) {
+            await ctx.reply(MESSAGES.CRYPTO_GATEWAY_NOT_CONFIGURED, { reply_markup: helpKeyboard() });
+            paymentState.delete(userId);
+            return true;
+        }
+
+        paymentState.set(userId, {
+            step: 'crypto_network',
+            methodId: selected.id,
+            methodName: selected.name,
+            cardNumber: selected.card_number,
+            cardHolder: selected.card_holder,
+            minAmount: selected.min_amount,
+            maxAmount: selected.max_amount,
+            isCrypto: true,
+            networkId: DEFAULT_CRYPTO_NETWORK,
+        });
+
+        await ctx.reply(MESSAGES.SELECT_CRYPTO_NETWORK, {
+            reply_markup: cryptoNetworkKeyboard([...CRYPTO_NETWORKS]),
+        });
         return true;
     }
 
@@ -142,6 +201,7 @@ export async function handlePaymentMethodSelect(ctx: any, db: D1Database, userId
         cardHolder: selected.card_holder,
         minAmount: selected.min_amount,
         maxAmount: selected.max_amount,
+        isCrypto: false,
     });
 
     await ctx.reply(
@@ -151,8 +211,33 @@ export async function handlePaymentMethodSelect(ctx: any, db: D1Database, userId
     return true;
 }
 
+export async function handleCryptoNetworkSelect(ctx: any, userId: number, text: string) {
+    const state = paymentState.get(userId);
+    if (!state || state.step !== 'crypto_network' || !state.isCrypto) return false;
+
+    const selected = CRYPTO_NETWORKS.find((n) => n.label === text || n.id === text);
+    if (!selected) {
+        await ctx.reply(MESSAGES.SELECT_CRYPTO_NETWORK, {
+            reply_markup: cryptoNetworkKeyboard([...CRYPTO_NETWORKS]),
+        });
+        return true;
+    }
+
+    paymentState.set(userId, {
+        ...state,
+        step: 'amount',
+        networkId: selected.id,
+    });
+
+    await ctx.reply(
+        `🌐 شبکه: <b>${selected.label}</b>\n\nلطفاً مبلغ شارژ را به <b>تومان</b> وارد کنید:`,
+        { parse_mode: 'HTML', reply_markup: paymentAmountKeyboard() }
+    );
+    return true;
+}
+
 // Step 3: Handle amount input
-export async function handlePaymentAmount(ctx: any, userId: number, text: string) {
+export async function handlePaymentAmount(ctx: any, userId: number, text: string, db?: D1Database, env?: Bindings) {
     const state = paymentState.get(userId);
     if (!state || state.step !== 'amount') return false;
 
@@ -172,12 +257,208 @@ export async function handlePaymentAmount(ctx: any, userId: number, text: string
         return true;
     }
 
+    if (state.isCrypto) {
+        if (!db || !env) {
+            await ctx.reply(MESSAGES.CRYPTO_GATEWAY_NOT_CONFIGURED, { reply_markup: helpKeyboard() });
+            paymentState.delete(userId);
+            return true;
+        }
+        await createCryptoTopUp(ctx, db, env, userId, { ...state, amount });
+        return true;
+    }
+
     paymentState.set(userId, { ...state, step: 'receipt', amount });
 
     await ctx.reply(
         MESSAGES.AMOUNT_RECEIVED(amount, state.cardNumber || '', state.cardHolder || ''),
         { parse_mode: 'HTML', reply_markup: paymentReceiptKeyboard() }
     );
+    return true;
+}
+
+async function createCryptoTopUp(
+    ctx: any,
+    db: D1Database,
+    env: Bindings,
+    userId: number,
+    state: {
+        methodId?: number;
+        methodName?: string;
+        minAmount?: number;
+        maxAmount?: number;
+        amount?: number;
+        networkId?: string;
+    },
+) {
+    const amount = state.amount ?? 0;
+    const networkId = state.networkId || DEFAULT_CRYPTO_NETWORK;
+
+    if (!isCryptoGatewayConfigured(env)) {
+        await ctx.reply(MESSAGES.CRYPTO_GATEWAY_NOT_CONFIGURED, { reply_markup: helpKeyboard() });
+        paymentState.delete(userId);
+        return;
+    }
+
+    Setting.use(db);
+    const dollarRateRaw = await Setting.get('dollar_rate');
+    const dollarRate = parseFloat(dollarRateRaw || '0');
+    if (!dollarRate || dollarRate <= 0) {
+        await ctx.reply(MESSAGES.CRYPTO_DOLLAR_RATE_MISSING, { reply_markup: helpKeyboard() });
+        paymentState.delete(userId);
+        return;
+    }
+
+    const usdAmount = Math.round((amount / dollarRate) * 1e8) / 1e8;
+    if (usdAmount <= 0) {
+        await ctx.reply(MESSAGES.INVALID_AMOUNT, { reply_markup: paymentAmountKeyboard() });
+        return;
+    }
+
+    PaymentMethod.use(db);
+    let methodId = state.methodId;
+    if (!methodId) {
+        const cryptoMethod = await PaymentMethod.findCryptoMethod();
+        if (!cryptoMethod) {
+            await ctx.reply(MESSAGES.CRYPTO_GATEWAY_NOT_CONFIGURED, { reply_markup: helpKeyboard() });
+            paymentState.delete(userId);
+            return;
+        }
+        methodId = cryptoMethod.id;
+    }
+
+    Payment.use(db);
+    const created = await Payment.create({
+        user_chat_id: userId,
+        user_username: ctx.from?.username ?? null,
+        user_first_name: ctx.from?.first_name ?? null,
+        payment_method_id: methodId,
+        amount,
+        card_number: networkId,
+        card_holder: 'Crypto Gateway',
+        receipt_image_url: null,
+        status: 'pending',
+        payment_type: 'crypto',
+        network_id: networkId,
+        crypto_status: 'pending',
+        fiat_currency: 'USD',
+    });
+    const localId = created.lastInsertRowid;
+
+    try {
+        const config = gatewayConfigFromEnv(env);
+        const gateway = await createGatewayPayment(config, {
+            amount: usdAmount,
+            network_id: networkId,
+            title: `Telegram top-up #${localId}`,
+            fiat_currency: 'USD',
+            metadata: {
+                payment_id: localId,
+                telegram_user_id: userId,
+            },
+            expiration_minutes: 30,
+        });
+
+        const checkoutUrl =
+            gateway.checkout_url ||
+            `${(env.CRYPTO_GATEWAY_BASE_URL || 'https://crypto-gateway.social-panel.workers.dev').replace(/\/$/, '')}/checkout/${gateway.id}`;
+
+        await Payment.update(String(localId), {
+            gateway_payment_id: gateway.id,
+            wallet_address: gateway.wallet_address,
+            crypto_amount: gateway.crypto_amount,
+            crypto_amount_formatted: gateway.crypto_amount_formatted || String(gateway.crypto_amount),
+            checkout_url: checkoutUrl,
+            expires_at: gateway.expires_at,
+            crypto_status: gateway.status || 'pending',
+            fiat_currency: gateway.fiat_currency || 'USD',
+            gateway_exchange_rate: gateway.exchange_rate ?? null,
+            updated_at: nowTehran(),
+        });
+
+        paymentState.set(userId, {
+            step: 'crypto_waiting',
+            isCrypto: true,
+            amount,
+            networkId,
+            localPaymentId: localId,
+            methodId,
+        });
+
+        const cryptoDisplay =
+            gateway.crypto_amount_formatted ||
+            `${gateway.crypto_amount} ${gateway.network?.currency || ''}`.trim();
+        const expiresDisplay = gateway.expires_at
+            ? new Date(gateway.expires_at).toLocaleString('fa-IR')
+            : '-';
+
+        await ctx.reply(
+            MESSAGES.CRYPTO_PAYMENT_CREATED(
+                amount,
+                cryptoDisplay,
+                networkLabel(networkId),
+                gateway.wallet_address,
+                checkoutUrl,
+                expiresDisplay,
+            ),
+            { parse_mode: 'HTML', reply_markup: cryptoWaitingKeyboard() },
+        );
+    } catch (e: any) {
+        const msg = e instanceof CryptoGatewayError ? e.message : (e?.message || 'خطای ناشناخته');
+        await Payment.markCryptoTerminal(localId, 'failed', 'failed', msg);
+        paymentState.delete(userId);
+        await ctx.reply(MESSAGES.CRYPTO_CREATE_FAILED(msg), { reply_markup: helpKeyboard() });
+    }
+}
+
+export async function handleCryptoStatusCheck(ctx: any, db: D1Database, env: Bindings, userId: number) {
+    const state = paymentState.get(userId);
+    let localId = state?.localPaymentId;
+
+    Payment.use(db);
+    if (!localId) {
+        const latest = await Payment.findLatestByUserChatId(userId);
+        if (latest && latest.payment_type === 'crypto' && latest.status === 'pending') {
+            localId = latest.id;
+        }
+    }
+
+    if (!localId) {
+        await ctx.reply(MESSAGES.CRYPTO_NO_PENDING, { reply_markup: helpKeyboard() });
+        paymentState.delete(userId);
+        return true;
+    }
+
+    const result = await refreshLocalCryptoPayment(db, env, localId, false);
+    if (!result.ok) {
+        await ctx.reply(MESSAGES.CRYPTO_CREATE_FAILED(result.error || 'خطا'), {
+            reply_markup: cryptoWaitingKeyboard(),
+        });
+        return true;
+    }
+
+    const payment = result.payment as any;
+    if (payment?.status === 'approved') {
+        paymentState.delete(userId);
+        await ctx.reply(MESSAGES.CRYPTO_PAYMENT_CONFIRMED(payment.amount), { reply_markup: helpKeyboard() });
+        return true;
+    }
+
+    if (payment?.status === 'expired' || payment?.crypto_status === 'expired') {
+        paymentState.delete(userId);
+        await ctx.reply(MESSAGES.CRYPTO_PAYMENT_EXPIRED, { reply_markup: helpKeyboard() });
+        return true;
+    }
+
+    if (payment?.status === 'failed' || payment?.crypto_status === 'failed') {
+        paymentState.delete(userId);
+        await ctx.reply(MESSAGES.CRYPTO_PAYMENT_FAILED, { reply_markup: helpKeyboard() });
+        return true;
+    }
+
+    await ctx.reply(MESSAGES.CRYPTO_STILL_PENDING(payment?.crypto_status || 'pending'), {
+        parse_mode: 'HTML',
+        reply_markup: cryptoWaitingKeyboard(),
+    });
     return true;
 }
 
@@ -349,11 +630,17 @@ export async function handlePaymentMethodCallback(ctx: any, db: D1Database, user
 }
 
 // Handle back button in payment flow
-export async function handlePaymentBack(ctx: any, db: D1Database, userId: number) {
+export async function handlePaymentBack(ctx: any, db: D1Database, userId: number, env?: Bindings) {
     const state = paymentState.get(userId);
     if (!state) return false;
 
-    if (state.step === 'receipt' || state.step === 'amount') {
+    if (state.step === 'crypto_network') {
+        paymentState.delete(userId);
+        await handleAddBalance(ctx, db, env);
+        return true;
+    }
+
+    if (state.step === 'receipt' || state.step === 'amount' || state.step === 'crypto_waiting') {
         paymentState.delete(userId);
         await ctx.reply('❌ افزایش موجودی لغو شد.', { reply_markup: helpKeyboard() });
         return true;

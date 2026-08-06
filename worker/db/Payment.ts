@@ -15,6 +15,19 @@ export interface PaymentRow {
     admin_note: string | null;
     created_at: string;
     updated_at: string;
+    payment_type?: string;
+    gateway_payment_id?: string | null;
+    network_id?: string | null;
+    wallet_address?: string | null;
+    crypto_amount?: number | null;
+    crypto_amount_formatted?: string | null;
+    checkout_url?: string | null;
+    expires_at?: string | null;
+    tx_hash?: string | null;
+    confirmations?: number | null;
+    crypto_status?: string | null;
+    fiat_currency?: string | null;
+    gateway_exchange_rate?: number | null;
 }
 
 export class Payment extends Model<PaymentRow> {
@@ -44,6 +57,26 @@ export class Payment extends Model<PaymentRow> {
         return this.rawFirst(
             'SELECT * FROM payments WHERE user_chat_id = ? ORDER BY id DESC LIMIT 1',
             chatId
+        );
+    }
+
+    static async findByGatewayPaymentId(this: any, gatewayPaymentId: string): Promise<PaymentRow | null> {
+        return this.rawFirst(
+            `SELECT * FROM ${this.table} WHERE gateway_payment_id = ? LIMIT 1`,
+            gatewayPaymentId,
+        );
+    }
+
+    static async findPendingCrypto(this: any, limit: number = 50): Promise<PaymentRow[]> {
+        return this.raw(
+            `SELECT * FROM ${this.table}
+             WHERE payment_type = 'crypto'
+               AND status = 'pending'
+               AND crypto_status IN ('pending', 'confirming')
+               AND gateway_payment_id IS NOT NULL
+             ORDER BY created_at ASC
+             LIMIT ?`,
+            limit,
         );
     }
 
@@ -97,6 +130,116 @@ export class Payment extends Model<PaymentRow> {
         return credited > 0 && approved > 0;
     }
 
+    /**
+     * Confirm a pending crypto payment from gateway status and credit once (idempotent).
+     */
+    static async confirmCryptoAndCredit(
+        this: any,
+        id: number,
+        userChatId: number,
+        amount: number,
+        fields: {
+            crypto_status?: string;
+            tx_hash?: string | null;
+            confirmations?: number | null;
+            crypto_amount?: number | null;
+            crypto_amount_formatted?: string | null;
+        } = {},
+    ): Promise<boolean> {
+        const now = nowTehran();
+        const cryptoStatus = fields.crypto_status || 'confirmed';
+        const results = await this.db.batch([
+            this.db
+                .prepare(
+                    `UPDATE telegram_users SET balance = balance + ?, updated_at = ?
+                     WHERE chat_id = ?
+                       AND EXISTS (
+                         SELECT 1 FROM ${this.table}
+                         WHERE id = ? AND status = 'pending' AND payment_type = 'crypto'
+                       )`
+                )
+                .bind(amount, now, userChatId, id),
+            this.db
+                .prepare(
+                    `UPDATE ${this.table}
+                     SET status = 'approved',
+                         crypto_status = ?,
+                         tx_hash = COALESCE(?, tx_hash),
+                         confirmations = COALESCE(?, confirmations),
+                         crypto_amount = COALESCE(?, crypto_amount),
+                         crypto_amount_formatted = COALESCE(?, crypto_amount_formatted),
+                         updated_at = ?
+                     WHERE id = ? AND status = 'pending' AND payment_type = 'crypto'
+                       AND EXISTS (SELECT 1 FROM telegram_users WHERE chat_id = ?)`
+                )
+                .bind(
+                    cryptoStatus,
+                    fields.tx_hash ?? null,
+                    fields.confirmations ?? null,
+                    fields.crypto_amount ?? null,
+                    fields.crypto_amount_formatted ?? null,
+                    now,
+                    id,
+                    userChatId,
+                ),
+        ]);
+        const credited = results[0]?.meta?.changes ?? 0;
+        const approved = results[1]?.meta?.changes ?? 0;
+        return credited > 0 && approved > 0;
+    }
+
+    /** Update crypto gateway fields without changing payment status (e.g. confirming). */
+    static async updateCryptoFields(
+        this: any,
+        id: number,
+        fields: Partial<Pick<PaymentRow,
+            | 'crypto_status'
+            | 'tx_hash'
+            | 'confirmations'
+            | 'crypto_amount'
+            | 'crypto_amount_formatted'
+            | 'wallet_address'
+            | 'checkout_url'
+            | 'expires_at'
+            | 'gateway_payment_id'
+            | 'network_id'
+            | 'fiat_currency'
+            | 'gateway_exchange_rate'
+            | 'admin_note'
+        >>,
+    ): Promise<void> {
+        const now = nowTehran();
+        const data: Record<string, unknown> = { ...fields, updated_at: now };
+        const columns = Object.keys(data);
+        const setClause = columns.map((c) => `${c} = ?`).join(', ');
+        await this.db
+            .prepare(`UPDATE ${this.table} SET ${setClause} WHERE id = ?`)
+            .bind(...Object.values(data), id)
+            .run();
+    }
+
+    /**
+     * Mark pending crypto payment as expired/failed (idempotent; does not touch balance).
+     */
+    static async markCryptoTerminal(
+        this: any,
+        id: number,
+        terminalStatus: 'expired' | 'failed' | 'rejected',
+        cryptoStatus: string,
+        adminNote?: string,
+    ): Promise<boolean> {
+        const now = nowTehran();
+        const result = await this.db
+            .prepare(
+                `UPDATE ${this.table}
+                 SET status = ?, crypto_status = ?, admin_note = COALESCE(?, admin_note), updated_at = ?
+                 WHERE id = ? AND status = 'pending' AND payment_type = 'crypto'`
+            )
+            .bind(terminalStatus, cryptoStatus, adminNote || null, now, id)
+            .run();
+        return (result.meta?.changes ?? 0) > 0;
+    }
+
     static async getStats(this: any): Promise<{
         total: number;
         pending: number;
@@ -108,7 +251,7 @@ export class Payment extends Model<PaymentRow> {
         const total = await this.raw('SELECT COUNT(*) as count FROM payments');
         const pending = await this.raw("SELECT COUNT(*) as count FROM payments WHERE status = 'pending'");
         const approved = await this.raw("SELECT COUNT(*) as count FROM payments WHERE status = 'approved'");
-        const rejected = await this.raw("SELECT COUNT(*) as count FROM payments WHERE status = 'rejected'");
+        const rejected = await this.raw("SELECT COUNT(*) as count FROM payments WHERE status IN ('rejected', 'expired', 'failed')");
         const totalAmount = await this.raw('SELECT COALESCE(SUM(amount), 0) as total FROM payments');
         const approvedAmount = await this.raw("SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE status = 'approved'");
 
@@ -124,7 +267,7 @@ export class Payment extends Model<PaymentRow> {
 
     static async getRecent(limit: number = 5): Promise<any[]> {
         return this.raw(
-            `SELECT id, user_chat_id, user_username, amount, status, created_at FROM ${this.table} ORDER BY created_at DESC LIMIT ?`,
+            `SELECT id, user_chat_id, user_username, amount, status, payment_type, crypto_status, created_at FROM ${this.table} ORDER BY created_at DESC LIMIT ?`,
             limit
         );
     }

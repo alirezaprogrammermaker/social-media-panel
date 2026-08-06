@@ -34,6 +34,9 @@
 			"*/5 * * * *",
 			"0 */6 * * *"
 		]
+	},
+	"vars": {
+		"CRYPTO_GATEWAY_BASE_URL": "https://crypto-gateway.social-panel.workers.dev"
 	}
 	/**
 	 * Smart Placement

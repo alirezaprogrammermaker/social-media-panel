@@ -57,6 +57,23 @@ export function paymentReceiptKeyboard() {
         .resized();
 }
 
+export function cryptoNetworkKeyboard(networks: { id: string; label: string }[]) {
+    const kb = new Keyboard();
+    for (const n of networks) {
+        kb.row().text(n.label);
+    }
+    kb.row().text(BUTTONS.BACK).text(BUTTONS.CANCEL_PAYMENT).resized();
+    return kb;
+}
+
+export function cryptoWaitingKeyboard() {
+    return new Keyboard()
+        .text(BUTTONS.CHECK_CRYPTO_STATUS)
+        .row()
+        .text(BUTTONS.CANCEL_PAYMENT)
+        .resized();
+}
+
 export function categoryKeyboard(categories: { name: string }[], page: number = 0) {
     const start = page * ITEMS_PER_PAGE;
     const end = start + ITEMS_PER_PAGE;
