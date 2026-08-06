@@ -17,7 +17,7 @@ import {
     CRYPTO_NETWORKS,
     DEFAULT_CRYPTO_NETWORK,
     createPayment as createGatewayPayment,
-    gatewayConfigFromEnv,
+    gatewayConfigFromSettings,
     isCryptoGatewayConfigured,
     networkLabel,
     CryptoGatewayError,
@@ -130,7 +130,7 @@ export async function handleAddBalance(ctx: any, db: D1Database, env?: Bindings)
     PaymentMethod.use(db);
     let methods = await PaymentMethod.getActiveMethods();
     const cryptoMethod = await PaymentMethod.findCryptoMethod();
-    const cryptoEnabled = env ? isCryptoGatewayConfigured(env) : false;
+    const cryptoEnabled = env ? await isCryptoGatewayConfigured(db, env) : false;
 
     // Only expose crypto method when API key is configured
     methods = methods.filter((m) => !PaymentMethod.isCryptoMethod(m));
@@ -155,7 +155,7 @@ export async function handlePaymentMethodSelect(ctx: any, db: D1Database, userId
     PaymentMethod.use(db);
     let methods = await PaymentMethod.getActiveMethods();
     const cryptoMethod = await PaymentMethod.findCryptoMethod();
-    const cryptoEnabled = env ? isCryptoGatewayConfigured(env) : false;
+    const cryptoEnabled = env ? await isCryptoGatewayConfigured(db, env) : false;
     methods = methods.filter((m) => !PaymentMethod.isCryptoMethod(m));
     if (cryptoEnabled && cryptoMethod) {
         methods = [cryptoMethod, ...methods];
@@ -169,7 +169,7 @@ export async function handlePaymentMethodSelect(ctx: any, db: D1Database, userId
     }
 
     if (PaymentMethod.isCryptoMethod(selected)) {
-        if (!env || !isCryptoGatewayConfigured(env)) {
+        if (!env || !(await isCryptoGatewayConfigured(db, env))) {
             await ctx.reply(MESSAGES.CRYPTO_GATEWAY_NOT_CONFIGURED, { reply_markup: helpKeyboard() });
             paymentState.delete(userId);
             return true;
@@ -293,7 +293,7 @@ async function createCryptoTopUp(
     const amount = state.amount ?? 0;
     const networkId = state.networkId || DEFAULT_CRYPTO_NETWORK;
 
-    if (!isCryptoGatewayConfigured(env)) {
+    if (!(await isCryptoGatewayConfigured(db, env))) {
         await ctx.reply(MESSAGES.CRYPTO_GATEWAY_NOT_CONFIGURED, { reply_markup: helpKeyboard() });
         paymentState.delete(userId);
         return;
@@ -345,7 +345,7 @@ async function createCryptoTopUp(
     const localId = created.lastInsertRowid;
 
     try {
-        const config = gatewayConfigFromEnv(env);
+        const config = await gatewayConfigFromSettings(db, env);
         const gateway = await createGatewayPayment(config, {
             amount: usdAmount,
             network_id: networkId,
@@ -360,7 +360,7 @@ async function createCryptoTopUp(
 
         const checkoutUrl =
             gateway.checkout_url ||
-            `${(env.CRYPTO_GATEWAY_BASE_URL || 'https://crypto-gateway.social-panel.workers.dev').replace(/\/$/, '')}/checkout/${gateway.id}`;
+            `${(config.baseUrl || 'https://crypto-gateway.social-panel.workers.dev').replace(/\/$/, '')}/checkout/${gateway.id}`;
 
         await Payment.update(String(localId), {
             gateway_payment_id: gateway.id,

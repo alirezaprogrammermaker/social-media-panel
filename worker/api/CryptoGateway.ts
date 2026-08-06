@@ -1,10 +1,18 @@
 /**
  * Public Crypto Payment Gateway client.
  * NEVER handles mnemonic / private keys — only merchant API (Bearer cg_...).
+ *
+ * Credentials prefer DB settings (dashboard Settings page), with optional env fallback.
  */
+
+import { Setting } from '../db/Setting';
 
 export const CRYPTO_GATEWAY_DEFAULT_BASE =
     'https://crypto-gateway.social-panel.workers.dev';
+
+export const SETTING_CRYPTO_GATEWAY_API_KEY = 'crypto_gateway_api_key';
+export const SETTING_CRYPTO_GATEWAY_WEBHOOK_SECRET = 'crypto_gateway_webhook_secret';
+export const SETTING_CRYPTO_GATEWAY_BASE_URL = 'crypto_gateway_base_url';
 
 /** Supported networks for the Telegram bot (excludes sol). */
 export const CRYPTO_NETWORKS = [
@@ -95,6 +103,18 @@ export type CryptoGatewayConfig = {
     baseUrl?: string;
 };
 
+export type CryptoGatewayEnvFallback = {
+    CRYPTO_GATEWAY_API_KEY?: string;
+    CRYPTO_GATEWAY_WEBHOOK_SECRET?: string;
+    CRYPTO_GATEWAY_BASE_URL?: string;
+};
+
+export type ResolvedCryptoGateway = {
+    apiKey: string | null;
+    webhookSecret: string | null;
+    baseUrl: string;
+};
+
 function resolveBaseUrl(baseUrl?: string): string {
     const raw = (baseUrl || CRYPTO_GATEWAY_DEFAULT_BASE).replace(/\/$/, '');
     return raw;
@@ -113,13 +133,72 @@ async function parseError(res: Response): Promise<string> {
     }
 }
 
-function requireApiKey(apiKey: string | undefined): string {
+function requireApiKey(apiKey: string | undefined | null): string {
     if (!apiKey?.trim()) {
         throw new CryptoGatewayError(
-            'CRYPTO_GATEWAY_API_KEY تنظیم نشده است. کلید API درگاه را به عنوان secret تنظیم کنید.',
+            'کلید API درگاه کریپتو تنظیم نشده است. آن را از صفحه تنظیمات داشبورد وارد کنید.',
         );
     }
     return apiKey.trim();
+}
+
+/** Mask a secret for UI display (never log full values). */
+export function maskSecret(value: string | null | undefined): string | null {
+    if (!value?.trim()) return null;
+    const v = value.trim();
+    if (v.length <= 4) return '••••';
+    return `••••${v.slice(-4)}`;
+}
+
+/**
+ * Resolve gateway credentials: DB settings first, then optional env fallback.
+ */
+export async function resolveCryptoGatewaySettings(
+    db: D1Database,
+    env?: CryptoGatewayEnvFallback,
+): Promise<ResolvedCryptoGateway> {
+    Setting.use(db);
+    const [apiKeySetting, webhookSetting, baseUrlSetting] = await Promise.all([
+        Setting.get(SETTING_CRYPTO_GATEWAY_API_KEY),
+        Setting.get(SETTING_CRYPTO_GATEWAY_WEBHOOK_SECRET),
+        Setting.get(SETTING_CRYPTO_GATEWAY_BASE_URL),
+    ]);
+
+    const apiKey = apiKeySetting?.trim() || env?.CRYPTO_GATEWAY_API_KEY?.trim() || null;
+    const webhookSecret =
+        webhookSetting?.trim() || env?.CRYPTO_GATEWAY_WEBHOOK_SECRET?.trim() || null;
+    const baseUrl = resolveBaseUrl(
+        baseUrlSetting?.trim() || env?.CRYPTO_GATEWAY_BASE_URL?.trim() || CRYPTO_GATEWAY_DEFAULT_BASE,
+    );
+
+    return { apiKey, webhookSecret, baseUrl };
+}
+
+export async function isCryptoGatewayConfigured(
+    db: D1Database,
+    env?: CryptoGatewayEnvFallback,
+): Promise<boolean> {
+    const { apiKey } = await resolveCryptoGatewaySettings(db, env);
+    return !!apiKey;
+}
+
+export async function gatewayConfigFromSettings(
+    db: D1Database,
+    env?: CryptoGatewayEnvFallback,
+): Promise<CryptoGatewayConfig> {
+    const resolved = await resolveCryptoGatewaySettings(db, env);
+    return {
+        apiKey: requireApiKey(resolved.apiKey),
+        baseUrl: resolved.baseUrl,
+    };
+}
+
+/** @deprecated Prefer gatewayConfigFromSettings — kept for rare env-only callers */
+export function gatewayConfigFromEnv(env: CryptoGatewayEnvFallback): CryptoGatewayConfig {
+    return {
+        apiKey: requireApiKey(env.CRYPTO_GATEWAY_API_KEY),
+        baseUrl: env.CRYPTO_GATEWAY_BASE_URL || CRYPTO_GATEWAY_DEFAULT_BASE,
+    };
 }
 
 export async function createPayment(
@@ -209,22 +288,6 @@ export async function verifyWebhookSignature(
         mismatch |= expected.charCodeAt(i) ^ signature.charCodeAt(i);
     }
     return mismatch === 0;
-}
-
-export function isCryptoGatewayConfigured(env: {
-    CRYPTO_GATEWAY_API_KEY?: string;
-}): boolean {
-    return !!env.CRYPTO_GATEWAY_API_KEY?.trim();
-}
-
-export function gatewayConfigFromEnv(env: {
-    CRYPTO_GATEWAY_API_KEY?: string;
-    CRYPTO_GATEWAY_BASE_URL?: string;
-}): CryptoGatewayConfig {
-    return {
-        apiKey: requireApiKey(env.CRYPTO_GATEWAY_API_KEY),
-        baseUrl: env.CRYPTO_GATEWAY_BASE_URL || CRYPTO_GATEWAY_DEFAULT_BASE,
-    };
 }
 
 export function networkLabel(networkId: string): string {

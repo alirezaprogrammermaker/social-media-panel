@@ -96,9 +96,9 @@ cp .env.example .dev.vars
 Edit `.dev.vars` and set your secrets:
 ```env
 SEED_ADMIN_SECRET=your-random-secret-here
-# Optional — Crypto Payment Gateway (from gateway /admin/api-keys and /admin/webhooks)
-CRYPTO_GATEWAY_API_KEY=cg_your_key
-CRYPTO_GATEWAY_WEBHOOK_SECRET=your_webhook_secret
+# Optional local fallback for crypto gateway (prefer dashboard Settings → Crypto)
+# CRYPTO_GATEWAY_API_KEY=cg_your_key
+# CRYPTO_GATEWAY_WEBHOOK_SECRET=your_webhook_secret
 ```
 
 Generate a random secret:
@@ -161,15 +161,11 @@ curl -X POST http://localhost:5173/api/auth/seed-admin \
 # Set the seed admin secret as a Wrangler secret
 wrangler secret put SEED_ADMIN_SECRET
 
-# Optional: Crypto Payment Gateway secrets (never mnemonic / private keys)
-wrangler secret put CRYPTO_GATEWAY_API_KEY
-wrangler secret put CRYPTO_GATEWAY_WEBHOOK_SECRET
-
 # Build and deploy
 pnpm deploy
 ```
 
-`CRYPTO_GATEWAY_BASE_URL` defaults to `https://crypto-gateway.social-panel.workers.dev` via `wrangler.jsonc` `vars`.
+`CRYPTO_GATEWAY_BASE_URL` defaults to `https://crypto-gateway.social-panel.workers.dev` via `wrangler.jsonc` `vars` (or override in dashboard Settings).
 
 ### Set up Telegram Bot
 
@@ -191,14 +187,18 @@ pnpm deploy
 Personal gateway at `https://crypto-gateway.social-panel.workers.dev` (API: `/api/v1`).  
 This panel never stores or requests mnemonic / private keys — only the public merchant API (`Bearer cg_...`).
 
+**Primary setup (recommended):** dashboard → **Settings** → **پرداخت کریپتو**
+
 1. In the gateway admin: set Tatum + XPUBs, enable networks, create an API key (`/admin/api-keys`)
-2. Set secrets on this worker: `CRYPTO_GATEWAY_API_KEY`, `CRYPTO_GATEWAY_WEBHOOK_SECRET`
+2. In panel Settings → Crypto: paste **API Key** (`cg_...`) and **Webhook Secret** (optional Base URL)
 3. Register an outgoing webhook in gateway **`/admin/webhooks`**:
-   - URL: `https://YOUR_WORKER.workers.dev/api/crypto-gateway/webhook`
+   - URL: `https://social-panel.social-panel.workers.dev/api/crypto-gateway/webhook` (or your worker host — copy from Settings)
    - Events: `payment.created`, `payment.confirmed`, `payment.expired`, `payment.failed`
-   - Use the same secret as `CRYPTO_GATEWAY_WEBHOOK_SECRET` (header `X-Signature` = HMAC-SHA256 hex of raw body)
-4. Set **نرخ دلار** in dashboard Settings (toman per 1 USD) — used to convert user toman top-up → gateway USD amount
+   - Use the **same** webhook secret you saved in Settings (header `X-Signature` = HMAC-SHA256 hex of raw body)
+4. Set **نرخ دلار** in Settings → General (toman per 1 USD) — used to convert user toman top-up → gateway USD amount
 5. Apply migration `0023_crypto_payments.sql` if not already applied
+
+Env vars (`CRYPTO_GATEWAY_API_KEY` / `CRYPTO_GATEWAY_WEBHOOK_SECRET`) remain an optional fallback for local/dev; Settings values take precedence. No `wrangler secret put` is required for crypto.
 
 **Default network:** `usdt-trc20` (Solana is not offered in the bot).  
 **`callback_url` on create** is only a checkout return link — confirmation uses the merchant webhook + a 5‑minute cron poll fallback.  
@@ -336,11 +336,12 @@ The project uses **23 migrations** with the following main tables:
 ## 🔐 Security Notes
 
 - **Never commit** your `.dev.vars` or `.env` files
-- **Use Wrangler secrets** for production: `wrangler secret put SEED_ADMIN_SECRET` (and crypto gateway secrets if used)
+- **Use Wrangler secrets** for production seed secret: `wrangler secret put SEED_ADMIN_SECRET`
+- Crypto gateway API key / webhook secret are managed in **dashboard Settings** (optional env fallback; never mnemonic / private keys)
 - The `/api/auth/seed-admin` endpoint requires a secret key
 - All `/api/dashboard`, `/api/smm`, and `/api/ai` routes require an authenticated **admin** session (HTTP-only cookie)
 - Telegram webhook validates the `X-Telegram-Bot-Api-Secret-Token` header and refuses traffic when no secret is configured
-- Crypto gateway merchant webhook verifies `X-Signature` (HMAC-SHA256) with `CRYPTO_GATEWAY_WEBHOOK_SECRET`
+- Crypto gateway merchant webhook verifies `X-Signature` (HMAC-SHA256) with the webhook secret from Settings (or env fallback)
 - Passwords are hashed with PBKDF2 (100k iterations, SHA-256)
 - Signup creates a normal user only; the React dashboard is admin-only (use `seed-admin` for the first admin)
 

@@ -1,21 +1,32 @@
 import { useEffect, useState, createContext, useContext } from 'react';
 import {
     Card, Input, Button, Typography, Space, Tag, Descriptions, Switch,
-    Table, message, Row, Col, Tabs, TimePicker,
+    Table, message, Row, Col, Tabs, TimePicker, Alert, Divider,
 } from 'antd';
 import {
     SaveOutlined, LinkOutlined, DeleteOutlined, InfoCircleOutlined,
     PlusOutlined, MinusCircleOutlined,
     RobotOutlined, MessageOutlined, SettingOutlined, CheckCircleOutlined,
-    SendOutlined,
+    SendOutlined, DollarOutlined, CopyOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
 
-const { Text } = Typography;
-const { TextArea } = Input;
+const { Text, Paragraph, Title } = Typography;
+const { TextArea, Password } = Input;
 
 interface BotCommand { command: string; description: string; }
+
+interface CryptoGatewayInfo {
+    hasApiKey: boolean;
+    apiKeyHint: string | null;
+    hasWebhookSecret: boolean;
+    webhookSecretHint: string | null;
+    baseUrl: string;
+    defaultBaseUrl: string;
+    webhookUrl: string;
+    configured: boolean;
+}
 
 interface SettingsContextType {
     token: string; setToken: (v: string) => void;
@@ -40,12 +51,18 @@ interface SettingsContextType {
     receiptBanHours: string; setReceiptBanHours: (v: string) => void;
     statsReportEnabled: boolean; setStatsReportEnabled: (v: boolean) => void;
     statsReportTime: string; setStatsReportTime: (v: string) => void;
+    cryptoGateway: CryptoGatewayInfo | null;
+    setCryptoGateway: (v: CryptoGatewayInfo | null) => void;
+    cryptoApiKey: string; setCryptoApiKey: (v: string) => void;
+    cryptoWebhookSecret: string; setCryptoWebhookSecret: (v: string) => void;
+    cryptoBaseUrl: string; setCryptoBaseUrl: (v: string) => void;
     apiPut: (endpoint: string, body: Record<string, any>, successMsg: string, loadingKey: string) => Promise<void>;
     saveToken: () => Promise<void>;
     setWebhook: () => Promise<void>;
     deleteWebhook: () => Promise<void>;
     fetchWebhookInfo: () => Promise<void>;
     toggleRegistration: (checked: boolean) => Promise<void>;
+    saveCryptoGateway: () => Promise<void>;
     addCommand: () => void;
 }
 
@@ -80,6 +97,10 @@ function SettingsProvider({ children }: { children: React.ReactNode }) {
     const [receiptBanHours, setReceiptBanHours] = useState('3');
     const [statsReportEnabled, setStatsReportEnabled] = useState(true);
     const [statsReportTime, setStatsReportTime] = useState('20:00');
+    const [cryptoGateway, setCryptoGateway] = useState<CryptoGatewayInfo | null>(null);
+    const [cryptoApiKey, setCryptoApiKey] = useState('');
+    const [cryptoWebhookSecret, setCryptoWebhookSecret] = useState('');
+    const [cryptoBaseUrl, setCryptoBaseUrl] = useState('');
 
     useEffect(() => {
         fetch('/api/dashboard/settings', { credentials: 'include' })
@@ -100,6 +121,10 @@ function SettingsProvider({ children }: { children: React.ReactNode }) {
                 if (data.receiptBanHours) setReceiptBanHours(data.receiptBanHours);
                 if (data.statsReportEnabled !== undefined) setStatsReportEnabled(data.statsReportEnabled);
                 if (data.statsReportTime) setStatsReportTime(data.statsReportTime);
+                if (data.cryptoGateway) {
+                    setCryptoGateway(data.cryptoGateway);
+                    setCryptoBaseUrl(data.cryptoGateway.baseUrl || data.cryptoGateway.defaultBaseUrl || '');
+                }
                 setPageLoading(false);
             })
             .catch(() => {
@@ -184,6 +209,42 @@ function SettingsProvider({ children }: { children: React.ReactNode }) {
         } finally { setLoading(null); }
     };
 
+    const saveCryptoGateway = async () => {
+        const body: Record<string, string> = {};
+        if (cryptoApiKey.trim()) body.api_key = cryptoApiKey.trim();
+        if (cryptoWebhookSecret.trim()) body.webhook_secret = cryptoWebhookSecret.trim();
+        const currentBase = cryptoGateway?.baseUrl || '';
+        if (cryptoBaseUrl.trim() !== currentBase) {
+            body.base_url = cryptoBaseUrl.trim();
+        }
+        if (!body.api_key && !body.webhook_secret && body.base_url === undefined) {
+            message.warning('تغییری برای ذخیره وجود ندارد');
+            return;
+        }
+        setLoading('crypto');
+        try {
+            const res = await fetch('/api/dashboard/settings/crypto-gateway', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify(body),
+            });
+            const data = await res.json();
+            if (!res.ok) { message.error(data.error || 'خطا در ذخیره'); return; }
+            if (data.cryptoGateway) {
+                setCryptoGateway(data.cryptoGateway);
+                setCryptoBaseUrl(data.cryptoGateway.baseUrl || '');
+            }
+            setCryptoApiKey('');
+            setCryptoWebhookSecret('');
+            message.success('تنظیمات درگاه کریپتو ذخیره شد');
+        } catch {
+            message.error('خطای شبکه');
+        } finally {
+            setLoading(null);
+        }
+    };
+
     const addCommand = () => {
         if (!newCmd.trim() || !newCmdDesc.trim()) return message.error('فیلدها را پر کنید');
         setBotCommands((prev) => [...prev, { command: newCmd.trim(), description: newCmdDesc.trim() }]);
@@ -199,8 +260,10 @@ function SettingsProvider({ children }: { children: React.ReactNode }) {
             receiptAnalysisEnabled, setReceiptAnalysisEnabled, receiptVerificationRequired, setReceiptVerificationRequired,
             receiptMaxInvalidAttempts, setReceiptMaxInvalidAttempts, receiptBanHours, setReceiptBanHours,
             statsReportEnabled, setStatsReportEnabled, statsReportTime, setStatsReportTime,
+            cryptoGateway, setCryptoGateway, cryptoApiKey, setCryptoApiKey,
+            cryptoWebhookSecret, setCryptoWebhookSecret, cryptoBaseUrl, setCryptoBaseUrl,
             apiPut, saveToken, setWebhook, deleteWebhook, fetchWebhookInfo,
-            toggleRegistration, addCommand,
+            toggleRegistration, saveCryptoGateway, addCommand,
         }}>
             {children}
         </SettingsContext.Provider>
@@ -219,9 +282,12 @@ function BotSettings() {
         <Row gutter={[24, 24]}>
             <Col xs={24} lg={12}>
                 <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-                    <Card title="توکن ربات تلگرام">
+                    <Card title="۱. توکن ربات تلگرام">
+                        <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
+                            توکن را از <Text code>@BotFather</Text> بگیرید و ذخیره کنید.
+                        </Text>
                         <Space.Compact style={{ width: '100%' }}>
-                            <Input value={s.token} onChange={(e) => s.setToken(e.target.value)} placeholder="توکن ربات را وارد کنید" />
+                            <Password value={s.token} onChange={(e) => s.setToken(e.target.value)} placeholder="توکن ربات را وارد کنید" visibilityToggle />
                             <Button type="primary" icon={<SaveOutlined />} loading={s.loading === 'token'} onClick={s.saveToken}>ذخیره</Button>
                         </Space.Compact>
                         {s.botInfo && (
@@ -267,7 +333,13 @@ function BotSettings() {
                         <Button type="primary" icon={<SaveOutlined />} loading={s.loading === 'bot-commands'} style={{ marginTop: 12 }}
                             onClick={() => s.apiPut('bot-commands', { commands: s.botCommands }, 'دستورات ذخیره شد', 'bot-commands')}>ذخیره دستورات</Button>
                     </Card>
-                    <Card title="وب‌هوک">
+                    <Card title="۲. وب‌هوک تلگرام">
+                        <Alert
+                            type="warning"
+                            showIcon
+                            style={{ marginBottom: 12 }}
+                            message="بعد از ذخیره توکن، حتماً وب‌هوک را تنظیم کنید؛ در غیر این صورت ربات آپدیت‌ها را رد می‌کند."
+                        />
                         <Space.Compact style={{ width: '100%' }}>
                             <Input value={s.webhookUrl} onChange={(e) => s.setWebhookUrl(e.target.value)} placeholder="https://example.com/api/telegram/webhook" />
                             <Button type="primary" icon={<LinkOutlined />} loading={s.loading === 'webhook'} onClick={s.setWebhook}>تنظیم</Button>
@@ -296,6 +368,9 @@ function GeneralSettings() {
         <Row gutter={[24, 24]}>
             <Col xs={24} lg={12}>
                 <Card title="نرخ دلار (تومان)">
+                    <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
+                        برای تبدیل مبلغ شارژ کاربر (تومان) به دلار در پرداخت کریپتو استفاده می‌شود.
+                    </Text>
                     <Space.Compact style={{ width: '100%' }}>
                         <Input type="number" value={s.dollarRate} onChange={(e) => s.setDollarRate(e.target.value)} placeholder="نرخ دلار به تومان" />
                         <Button type="primary" icon={<SaveOutlined />} loading={s.loading === 'dollar-rate'}
@@ -313,6 +388,139 @@ function GeneralSettings() {
                 </Card>
             </Col>
         </Row>
+    );
+}
+
+function CryptoGatewaySettings() {
+    const s = useSettings();
+    const cg = s.cryptoGateway;
+    const webhookUrl = cg?.webhookUrl || `${window.location.origin}/api/crypto-gateway/webhook`;
+    const adminKeysUrl = `${(cg?.baseUrl || cg?.defaultBaseUrl || 'https://crypto-gateway.social-panel.workers.dev').replace(/\/$/, '')}/admin/api-keys`;
+    const adminWebhooksUrl = `${(cg?.baseUrl || cg?.defaultBaseUrl || 'https://crypto-gateway.social-panel.workers.dev').replace(/\/$/, '')}/admin/webhooks`;
+
+    const copyWebhook = async () => {
+        try {
+            await navigator.clipboard.writeText(webhookUrl);
+            message.success('آدرس وب‌هوک کپی شد');
+        } catch {
+            message.error('کپی نشد؛ دستی کپی کنید');
+        }
+    };
+
+    return (
+        <Space direction="vertical" size="large" style={{ width: '100%', maxWidth: 720 }}>
+            <Alert
+                type="info"
+                showIcon
+                message="پرداخت کریپتو از طریق درگاه عمومی"
+                description={
+                    <span>
+                        فقط کلید API عمومی (<Text code>cg_...</Text>) و رمز وب‌هوک را اینجا وارد کنید.
+                        هرگز mnemonic یا private key را در این پنل ذخیره نکنید.
+                    </span>
+                }
+            />
+
+            <Card
+                title={
+                    <Space>
+                        <span>وضعیت اتصال</span>
+                        {cg?.configured
+                            ? <Tag color="success">آماده</Tag>
+                            : <Tag color="warning">نیاز به پیکربندی</Tag>}
+                    </Space>
+                }
+            >
+                <Descriptions size="small" column={1}>
+                    <Descriptions.Item label="کلید API">
+                        {cg?.hasApiKey
+                            ? <Tag color="green">{cg.apiKeyHint || 'تنظیم شده'}</Tag>
+                            : <Tag>تنظیم نشده</Tag>}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="رمز وب‌هوک">
+                        {cg?.hasWebhookSecret
+                            ? <Tag color="green">{cg.webhookSecretHint || 'تنظیم شده'}</Tag>
+                            : <Tag>تنظیم نشده</Tag>}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="آدرس پایه درگاه">
+                        <Text copyable={{ text: cg?.baseUrl || cg?.defaultBaseUrl || '' }}>
+                            {cg?.baseUrl || cg?.defaultBaseUrl}
+                        </Text>
+                    </Descriptions.Item>
+                </Descriptions>
+            </Card>
+
+            <Card title="گام ۱ — کلیدها و آدرس">
+                <Paragraph type="secondary" style={{ marginBottom: 16 }}>
+                    کلید API را از{' '}
+                    <a href={adminKeysUrl} target="_blank" rel="noreferrer">صفحه API Keys درگاه</a>
+                    {' '}بسازید، سپس اینجا ذخیره کنید. با ذخیره کلید، گزینه پرداخت کریپتو در ربات فعال می‌شود.
+                </Paragraph>
+
+                <div style={{ marginBottom: 16 }}>
+                    <Text strong style={{ display: 'block', marginBottom: 8 }}>Crypto Gateway API Key</Text>
+                    <Password
+                        value={s.cryptoApiKey}
+                        onChange={(e) => s.setCryptoApiKey(e.target.value)}
+                        placeholder={cg?.hasApiKey ? `کلید فعلی: ${cg.apiKeyHint} — برای تغییر، کلید جدید وارد کنید` : 'cg_...'}
+                        visibilityToggle
+                    />
+                </div>
+
+                <div style={{ marginBottom: 16 }}>
+                    <Text strong style={{ display: 'block', marginBottom: 8 }}>Webhook Secret</Text>
+                    <Password
+                        value={s.cryptoWebhookSecret}
+                        onChange={(e) => s.setCryptoWebhookSecret(e.target.value)}
+                        placeholder={cg?.hasWebhookSecret ? `رمز فعلی: ${cg.webhookSecretHint} — برای تغییر، رمز جدید وارد کنید` : 'رمز وب‌هوک درگاه'}
+                        visibilityToggle
+                    />
+                    <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 4 }}>
+                        همان رمزی که در درگاه برای وب‌هوک خروجی تنظیم می‌کنید (هدر X-Signature).
+                    </Text>
+                </div>
+
+                <div style={{ marginBottom: 16 }}>
+                    <Text strong style={{ display: 'block', marginBottom: 8 }}>Base URL (اختیاری)</Text>
+                    <Input
+                        value={s.cryptoBaseUrl}
+                        onChange={(e) => s.setCryptoBaseUrl(e.target.value)}
+                        placeholder={cg?.defaultBaseUrl || 'https://crypto-gateway.social-panel.workers.dev'}
+                    />
+                    <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 4 }}>
+                        پیش‌فرض: {cg?.defaultBaseUrl || 'https://crypto-gateway.social-panel.workers.dev'}
+                    </Text>
+                </div>
+
+                <Button type="primary" icon={<SaveOutlined />} loading={s.loading === 'crypto'} block onClick={s.saveCryptoGateway}>
+                    ذخیره تنظیمات درگاه
+                </Button>
+            </Card>
+
+            <Card title="گام ۲ — ثبت وب‌هوک در درگاه">
+                <Paragraph type="secondary">
+                    در{' '}
+                    <a href={adminWebhooksUrl} target="_blank" rel="noreferrer">/admin/webhooks</a>
+                    {' '}یک وب‌هوک خروجی بسازید و این آدرس را ثبت کنید:
+                </Paragraph>
+                <Space.Compact style={{ width: '100%', marginBottom: 16 }}>
+                    <Input value={webhookUrl} readOnly />
+                    <Button icon={<CopyOutlined />} onClick={copyWebhook}>کپی</Button>
+                </Space.Compact>
+                <Divider style={{ margin: '12px 0' }} />
+                <Text strong style={{ display: 'block', marginBottom: 8 }}>رویدادهایی که باید فعال باشند:</Text>
+                <Space wrap>
+                    <Tag>payment.created</Tag>
+                    <Tag>payment.confirmed</Tag>
+                    <Tag>payment.expired</Tag>
+                    <Tag>payment.failed</Tag>
+                </Space>
+                <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>
+                    رمز وب‌هوک در درگاه باید با مقدار ذخیره‌شده در همین صفحه یکی باشد.
+                    همچنین نرخ دلار را از تب «تنظیمات عمومی» تنظیم کنید.
+                </Paragraph>
+            </Card>
+        </Space>
     );
 }
 
@@ -398,9 +606,9 @@ function SupportSettings() {
 
     return (
         <Space direction="vertical" size="large" style={{ width: '100%' }}>
-            <Card title="💬 پیام پشتیبانی ربات" style={{ maxWidth: 600 }}>
+            <Card title="پیام پشتیبانی ربات" style={{ maxWidth: 600 }}>
                 <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
-                    متنی که اینجا وارد کنید، زمانی که کاربر در ربات تلگرام دکمه "پشتیبانی" را بزند نمایش داده می‌شود.
+                    متنی که اینجا وارد کنید، زمانی که کاربر در ربات تلگرام دکمه «پشتیبانی» را بزند نمایش داده می‌شود.
                 </Text>
                 <TextArea rows={6} value={s.supportMessage} onChange={(e) => s.setSupportMessage(e.target.value)}
                     placeholder={"متن پشتیبانی...\n\nمثال:\n📞 شماره تماس: ۰۹۱۲۱۲۳۴۵۶۷\n📧 ایمیل: support@example.com\n⏰ ساعت پاسخگویی: ۹ صبح تا ۹ شب"} />
@@ -410,7 +618,7 @@ function SupportSettings() {
                 </Button>
             </Card>
 
-            <Card title="🤖 تحلیل تصویر رسید پرداخت" style={{ maxWidth: 600 }}>
+            <Card title="تحلیل تصویر رسید پرداخت" style={{ maxWidth: 600 }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
                     <Text strong>فعال‌سازی تحلیل تصویر</Text>
                     <Switch checked={s.receiptAnalysisEnabled === 'true'} onChange={toggleReceiptAnalysis}
@@ -435,7 +643,7 @@ function SupportSettings() {
                 </Button>
             </Card>
 
-            <Card title="🚫 تنظیمات تایید اجباری رسید" style={{ maxWidth: 600 }}>
+            <Card title="تنظیمات تایید اجباری رسید" style={{ maxWidth: 600 }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
                     <Text strong>تایید اجباری رسید توسط هوش مصنوعی</Text>
                     <Switch checked={s.receiptVerificationRequired === 'true'} onChange={(v) => s.setReceiptVerificationRequired(String(v))}
@@ -465,7 +673,7 @@ function SupportSettings() {
                 </Button>
             </Card>
 
-            <Card title="📊 گزارش روزانه آمار" style={{ maxWidth: 600 }}>
+            <Card title="گزارش روزانه آمار" style={{ maxWidth: 600 }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
                     <Text strong>ارسال گزارش روزانه به مدیر</Text>
                     <Switch checked={s.statsReportEnabled} onChange={(v) => s.setStatsReportEnabled(v)}
@@ -506,7 +714,10 @@ export function Settings() {
     return (
         <SettingsProvider>
             <div>
-                <h2 style={{ marginBottom: 24 }}>تنظیمات</h2>
+                <Title level={3} style={{ marginBottom: 8 }}>تنظیمات</Title>
+                <Paragraph type="secondary" style={{ marginBottom: 24 }}>
+                    توکن ربات، نرخ دلار، درگاه کریپتو و پشتیبانی را از تب‌های زیر مدیریت کنید.
+                </Paragraph>
                 <Tabs defaultActiveKey="bot" items={[
                     {
                         key: 'bot', label: <span><RobotOutlined /> ربات تلگرام</span>,
@@ -515,6 +726,10 @@ export function Settings() {
                     {
                         key: 'general', label: <span><SettingOutlined /> تنظیمات عمومی</span>,
                         children: <GeneralSettings />,
+                    },
+                    {
+                        key: 'crypto', label: <span><DollarOutlined /> پرداخت کریپتو</span>,
+                        children: <CryptoGatewaySettings />,
                     },
                     {
                         key: 'support', label: <span><MessageOutlined /> پشتیبانی</span>,

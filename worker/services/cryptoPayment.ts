@@ -3,7 +3,8 @@ import { Payment } from '../db/Payment';
 import { Setting } from '../db/Setting';
 import {
     getPayment,
-    gatewayConfigFromEnv,
+    gatewayConfigFromSettings,
+    isCryptoGatewayConfigured,
     type GatewayPayment,
     type GatewayWebhookPayload,
 } from '../api/CryptoGateway';
@@ -126,8 +127,8 @@ export async function refreshLocalCryptoPayment(
     localPaymentId: number,
     notifyUser: boolean = false,
 ): Promise<{ ok: boolean; error?: string; payment?: any; result?: { changed: boolean; credited: boolean; terminal: boolean } }> {
-    if (!env.CRYPTO_GATEWAY_API_KEY) {
-        return { ok: false, error: 'CRYPTO_GATEWAY_API_KEY تنظیم نشده است' };
+    if (!(await isCryptoGatewayConfigured(db, env))) {
+        return { ok: false, error: 'کلید API درگاه کریپتو در تنظیمات ذخیره نشده است' };
     }
 
     Payment.use(db);
@@ -138,7 +139,7 @@ export async function refreshLocalCryptoPayment(
     }
 
     try {
-        const config = gatewayConfigFromEnv(env);
+        const config = await gatewayConfigFromSettings(db, env);
         const gateway = await getPayment(config, local.gateway_payment_id);
         const result = await applyGatewayPaymentStatus(db, env, local, gateway, notifyUser);
         const updated = await Payment.find(String(localPaymentId));
@@ -150,7 +151,7 @@ export async function refreshLocalCryptoPayment(
 
 /** Poll pending crypto payments (cron fallback). */
 export async function pollPendingCryptoPayments(env: Bindings): Promise<{ checked: number; credited: number; expired: number }> {
-    if (!env.CRYPTO_GATEWAY_API_KEY) {
+    if (!(await isCryptoGatewayConfigured(env.DB, env))) {
         return { checked: 0, credited: 0, expired: 0 };
     }
 

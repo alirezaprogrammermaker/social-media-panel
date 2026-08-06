@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import {
     verifyWebhookSignature,
     healthCheck,
-    CRYPTO_GATEWAY_DEFAULT_BASE,
+    resolveCryptoGatewaySettings,
     type GatewayWebhookPayload,
 } from '../api/CryptoGateway';
 import { applyWebhookEvent } from '../services/cryptoPayment';
@@ -15,18 +15,18 @@ const cryptoGateway = new Hono<{ Bindings: Bindings }>();
  * Register this URL in gateway /admin/webhooks:
  *   https://YOUR_WORKER.workers.dev/api/crypto-gateway/webhook
  * Events: payment.created | payment.confirmed | payment.expired | payment.failed
- * Header: X-Signature = HMAC-SHA256(rawBody, CRYPTO_GATEWAY_WEBHOOK_SECRET) hex
+ * Header: X-Signature = HMAC-SHA256(rawBody, webhook secret from Settings) hex
  */
 cryptoGateway.post('/webhook', async (c) => {
-    const secret = c.env.CRYPTO_GATEWAY_WEBHOOK_SECRET;
-    if (!secret?.trim()) {
-        console.error('CRYPTO_GATEWAY_WEBHOOK_SECRET not configured');
+    const { webhookSecret } = await resolveCryptoGatewaySettings(c.env.DB, c.env);
+    if (!webhookSecret) {
+        console.error('Crypto gateway webhook secret not configured (Settings or env)');
         return c.json({ error: 'webhook secret not configured' }, 503);
     }
 
     const rawBody = await c.req.text();
     const signature = c.req.header('X-Signature');
-    const valid = await verifyWebhookSignature(secret, rawBody, signature);
+    const valid = await verifyWebhookSignature(webhookSecret, rawBody, signature);
     if (!valid) {
         return c.json({ error: 'invalid signature' }, 401);
     }
@@ -53,8 +53,8 @@ cryptoGateway.post('/webhook', async (c) => {
 
 /** Optional public proxy of gateway /health (no secrets). */
 cryptoGateway.get('/health', async (c) => {
-    const base = c.env.CRYPTO_GATEWAY_BASE_URL || CRYPTO_GATEWAY_DEFAULT_BASE;
-    const result = await healthCheck(base);
+    const { baseUrl } = await resolveCryptoGatewaySettings(c.env.DB, c.env);
+    const result = await healthCheck(baseUrl);
     return c.json(result, result.ok ? 200 : 502);
 });
 

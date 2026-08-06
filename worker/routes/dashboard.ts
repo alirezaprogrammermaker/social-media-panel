@@ -147,9 +147,24 @@ dashboard.get('/settings', async (c) => {
             'admin_chat_id', 'support_message', 'receipt_analysis_prompt', 'receipt_analysis_enabled',
             'receipt_verification_required', 'receipt_max_invalid_attempts', 'receipt_ban_hours',
             'stats_report_enabled', 'stats_report_time',
+            'crypto_gateway_api_key', 'crypto_gateway_webhook_secret', 'crypto_gateway_base_url',
         ];
         const values = await Promise.all(keys.map((k) => Setting.get(k)));
         const map = Object.fromEntries(keys.map((k, i) => [k, values[i]]));
+
+        const {
+            CRYPTO_GATEWAY_DEFAULT_BASE,
+            maskSecret,
+            resolveCryptoGatewaySettings,
+        } = await import('../api/CryptoGateway');
+
+        const resolved = await resolveCryptoGatewaySettings(c.env.DB, c.env);
+        const reqUrl = new URL(c.req.url);
+        const webhookUrl = `${reqUrl.protocol}//${reqUrl.host}/api/crypto-gateway/webhook`;
+
+        // Prefer stored setting for base URL display; fall back to resolved (env/default)
+        const storedBaseUrl = map.crypto_gateway_base_url?.trim() || '';
+
         return c.json({
             botInfo: map.telegram_bot_info ? JSON.parse(map.telegram_bot_info) : null,
             registrationDisabled: map.registration_disabled === 'true',
@@ -168,6 +183,16 @@ dashboard.get('/settings', async (c) => {
             statsReportEnabled: map.stats_report_enabled !== 'false',
             statsReportTime: map.stats_report_time ?? '20:00',
             hasToken: !!map.telegram_token,
+            cryptoGateway: {
+                hasApiKey: !!resolved.apiKey,
+                apiKeyHint: maskSecret(resolved.apiKey),
+                hasWebhookSecret: !!resolved.webhookSecret,
+                webhookSecretHint: maskSecret(resolved.webhookSecret),
+                baseUrl: storedBaseUrl || resolved.baseUrl,
+                defaultBaseUrl: CRYPTO_GATEWAY_DEFAULT_BASE,
+                webhookUrl,
+                configured: !!resolved.apiKey,
+            },
         });
     } catch (e) {
         return c.json({ error: 'خطا در دریافت تنظیمات' }, 500);
@@ -270,6 +295,72 @@ dashboard.put('/settings/dollar-rate', async (c) => {
         return c.json({ ok: true });
     } catch (e) {
         return c.json({ error: 'خطا در بروزرسانی نرخ دلار' }, 500);
+    }
+});
+
+dashboard.put('/settings/crypto-gateway', async (c) => {
+    try {
+        const body = await c.req.json<{
+            api_key?: string;
+            webhook_secret?: string;
+            base_url?: string;
+        }>();
+
+        const {
+            SETTING_CRYPTO_GATEWAY_API_KEY,
+            SETTING_CRYPTO_GATEWAY_WEBHOOK_SECRET,
+            SETTING_CRYPTO_GATEWAY_BASE_URL,
+            CRYPTO_GATEWAY_DEFAULT_BASE,
+            maskSecret,
+            resolveCryptoGatewaySettings,
+        } = await import('../api/CryptoGateway');
+
+        Setting.use(c.env.DB);
+
+        if (typeof body.api_key === 'string' && body.api_key.trim()) {
+            const key = body.api_key.trim();
+            if (!key.startsWith('cg_')) {
+                return c.json({ error: 'کلید API باید با cg_ شروع شود' }, 400);
+            }
+            await Setting.set(SETTING_CRYPTO_GATEWAY_API_KEY, key);
+        }
+
+        if (typeof body.webhook_secret === 'string' && body.webhook_secret.trim()) {
+            await Setting.set(SETTING_CRYPTO_GATEWAY_WEBHOOK_SECRET, body.webhook_secret.trim());
+        }
+
+        if (typeof body.base_url === 'string') {
+            const raw = body.base_url.trim().replace(/\/$/, '');
+            if (!raw) {
+                await Setting.remove(SETTING_CRYPTO_GATEWAY_BASE_URL);
+            } else {
+                if (!raw.startsWith('https://')) {
+                    return c.json({ error: 'آدرس پایه باید با https:// شروع شود' }, 400);
+                }
+                await Setting.set(SETTING_CRYPTO_GATEWAY_BASE_URL, raw);
+            }
+        }
+
+        const resolved = await resolveCryptoGatewaySettings(c.env.DB, c.env);
+        const storedBase = await Setting.get(SETTING_CRYPTO_GATEWAY_BASE_URL);
+        const reqUrl = new URL(c.req.url);
+        const webhookUrl = `${reqUrl.protocol}//${reqUrl.host}/api/crypto-gateway/webhook`;
+
+        return c.json({
+            ok: true,
+            cryptoGateway: {
+                hasApiKey: !!resolved.apiKey,
+                apiKeyHint: maskSecret(resolved.apiKey),
+                hasWebhookSecret: !!resolved.webhookSecret,
+                webhookSecretHint: maskSecret(resolved.webhookSecret),
+                baseUrl: storedBase?.trim() || resolved.baseUrl,
+                defaultBaseUrl: CRYPTO_GATEWAY_DEFAULT_BASE,
+                webhookUrl,
+                configured: !!resolved.apiKey,
+            },
+        });
+    } catch (e: any) {
+        return c.json({ error: e?.message || 'خطا در ذخیره تنظیمات درگاه کریپتو' }, 500);
     }
 });
 
@@ -762,13 +853,19 @@ dashboard.post('/payments/:id/refresh-crypto', async (c) => {
 
 dashboard.get('/crypto-gateway/health', async (c) => {
     try {
-        const { healthCheck, CRYPTO_GATEWAY_DEFAULT_BASE, isCryptoGatewayConfigured } = await import('../api/CryptoGateway');
-        const base = c.env.CRYPTO_GATEWAY_BASE_URL || CRYPTO_GATEWAY_DEFAULT_BASE;
-        const health = await healthCheck(base);
+        const {
+            healthCheck,
+            resolveCryptoGatewaySettings,
+            isCryptoGatewayConfigured,
+        } = await import('../api/CryptoGateway');
+        const resolved = await resolveCryptoGatewaySettings(c.env.DB, c.env);
+        const health = await healthCheck(resolved.baseUrl);
+        const reqUrl = new URL(c.req.url);
         return c.json({
-            configured: isCryptoGatewayConfigured(c.env),
-            hasWebhookSecret: !!c.env.CRYPTO_GATEWAY_WEBHOOK_SECRET?.trim(),
-            baseUrl: base,
+            configured: await isCryptoGatewayConfigured(c.env.DB, c.env),
+            hasWebhookSecret: !!resolved.webhookSecret,
+            baseUrl: resolved.baseUrl,
+            webhookUrl: `${reqUrl.protocol}//${reqUrl.host}/api/crypto-gateway/webhook`,
             webhookUrlHint: '/api/crypto-gateway/webhook',
             health,
         });
