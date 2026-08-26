@@ -69,15 +69,25 @@ function Backup-WranglerConfig {
     if (-not (Test-Path $src)) {
         throw "wrangler.jsonc not found in $Root"
     }
-    $backup = Join-Path $Root "wrangler.jsonc.bak-update"
+    # Keep backup OUTSIDE the repo so `git stash -u` cannot swallow it
+    $backup = Join-Path $env:TEMP ("smp-wrangler-bak-{0}.jsonc" -f [guid]::NewGuid().ToString("N"))
     Copy-Item -Path $src -Destination $backup -Force
     return $backup
 }
 
 function Restore-WranglerConfig([string]$BackupPath) {
+    if (-not $BackupPath -or -not (Test-Path -LiteralPath $BackupPath)) {
+        throw "Wrangler backup not found: $BackupPath"
+    }
     $dest = Join-Path $Root "wrangler.jsonc"
-    Copy-Item -Path $BackupPath -Destination $dest -Force
+    Copy-Item -LiteralPath $BackupPath -Destination $dest -Force
     Write-Ok "Restored local wrangler.jsonc (database_id preserved)"
+}
+
+function Remove-WranglerBackup([string]$BackupPath) {
+    if ($BackupPath -and (Test-Path -LiteralPath $BackupPath)) {
+        Remove-Item -LiteralPath $BackupPath -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Test-OnlyWranglerConflict([string[]]$Unmerged) {
@@ -333,4 +343,7 @@ try {
 catch {
     Write-Err $_.Exception.Message
     exit 1
+}
+finally {
+    if ($backup) { Remove-WranglerBackup $backup }
 }
