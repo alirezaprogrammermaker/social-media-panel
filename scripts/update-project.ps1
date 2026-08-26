@@ -110,10 +110,11 @@ function Update-FromGitHub([string]$BranchName, [string]$BackupPath) {
     Write-Step "Preparing clean merge (your wrangler.jsonc stays safe)"
 
     # Clear dirty wrangler from the worktree so merge is not blocked; we already have a backup.
-    git restore --source=HEAD --worktree --staged -- "wrangler.jsonc" 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        git checkout HEAD -- "wrangler.jsonc" 2>$null
-    }
+    # Ignore failures here (older git / clean tree) - do not abort the script.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    git checkout HEAD -- wrangler.jsonc 2>&1 | Out-Null
+    $ErrorActionPreference = $prevEap
 
     $stashed = $false
     $porcelain = @(git status --porcelain)
