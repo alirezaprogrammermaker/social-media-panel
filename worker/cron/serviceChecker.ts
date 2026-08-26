@@ -117,9 +117,14 @@ export async function syncServicesFromProviders(db: D1Database): Promise<SyncRes
                 const remote = remoteServices.find((s) => s.service === remoteId);
 
                 if (!remote) {
-                    await Service.toggleActive(existing.id!, false);
-                    result.deactivated++;
-                    notifications.push(`❌ ${existing.name} (غیرفعال - حذف شده از ارائه‌دهنده)`);
+                    // Only deactivate + notify once while still active
+                    if (existing.is_active) {
+                        await Service.toggleActive(existing.id!, false);
+                        result.deactivated++;
+                        notifications.push(
+                            `❌ ${existing.name}\nسرویس در لیست ارائه‌دهنده یافت نشد و غیرفعال شد`
+                        );
+                    }
                     continue;
                 }
 
@@ -156,7 +161,7 @@ async function sendSyncNotification(
         const more = notifications.length > maxLines
             ? `\n… و ${notifications.length - maxLines} مورد دیگر`
             : '';
-        const message = `🔄 تغییر قیمت سرویس‌های ${providerName}:\n\n${lines.join('\n\n')}${more}`;
+        const message = `🔄 همگام‌سازی سرویس‌های ${providerName}:\n\n${lines.join('\n\n')}${more}`;
         await api.sendMessage(adminChatId, message);
     } catch (error: any) {
         console.error('Failed to send sync notification:', error.message);
@@ -209,9 +214,13 @@ export async function manualSyncServicesFromProviders(db: D1Database): Promise<S
                 const remote = remoteServices.find((s) => s.service === remoteId);
 
                 if (!remote) {
-                    await Service.toggleActive(existing.id!, false);
-                    result.deactivated++;
-                    notifications.push(`❌ ${existing.name} (غیرفعال - حذف شده از ارائه‌دهنده)`);
+                    if (existing.is_active) {
+                        await Service.toggleActive(existing.id!, false);
+                        result.deactivated++;
+                        notifications.push(
+                            `❌ ${existing.name}\nسرویس در لیست ارائه‌دهنده یافت نشد و غیرفعال شد`
+                        );
+                    }
                     continue;
                 }
 
