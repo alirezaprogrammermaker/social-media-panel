@@ -58,9 +58,13 @@ export default function Services() {
 
     useEffect(() => {
         if (modalOpen && !editingItem) {
-            form.setFieldValue('api_provider_id', 'manual');
+            const current = form.getFieldValue('api_provider_id');
+            // Only default to manual when opening a blank create form (not add-from-API prefill)
+            if (current === undefined || current === null) {
+                form.setFieldValue('api_provider_id', 'manual');
+            }
         }
-    }, [modalOpen, editingItem]);
+    }, [modalOpen, editingItem, form]);
 
     const fetchCategories = async () => { setCategories(await smmApi.getCategories()); };
 
@@ -126,11 +130,20 @@ export default function Services() {
                 const service = data.service;
                 const matchedCategory = categories.find((c) => c.name.toLowerCase() === service.category_name?.toLowerCase());
                 const priceInToman = Math.ceil(parseFloat(service.api_provider_service_price || '0') * dollarRate);
+                const prefill = {
+                    name: service.name,
+                    type: service.type,
+                    rate: String(priceInToman),
+                    min: String(service.min ?? '1'),
+                    max: String(service.max ?? '1000'),
+                    category_id: matchedCategory?.id,
+                    api_provider_id: service.api_provider_id,
+                    api_provider_service_id: service.api_provider_service_id,
+                    api_provider_service_price: service.api_provider_service_price,
+                };
                 openCreateModal();
-                form.setFieldsValue({
-                    name: service.name, type: service.type, rate: String(priceInToman), min: service.min, max: service.max,
-                    category_id: matchedCategory?.id, api_provider_id: service.api_provider_id, api_provider_service_price: service.api_provider_service_price,
-                });
+                // After openCreateModal's default 'manual' effect, apply API prefill
+                setTimeout(() => form.setFieldsValue(prefill), 0);
             } else message.error(data.error || 'خطا در دریافت اطلاعات سرویس');
         } catch { message.error('خطا در دریافت اطلاعات سرویس'); }
         setAddFromApiLoading(false);
@@ -146,7 +159,12 @@ export default function Services() {
                     const name = input?.value?.trim();
                     if (name) {
                         const data = await smmApi.createCategory({ name, sort_order: 0 });
-                        if (data.ok) { message.success('دسته‌بندی اضافه شد'); await fetchCategories(); form.setFieldValue('category_id', data.category?.id); }
+                        if (data.ok) {
+                            message.success('دسته‌بندی اضافه شد');
+                            await fetchCategories();
+                            const newId = data.category?.id ?? data.category?.lastInsertRowid;
+                            if (newId) form.setFieldValue('category_id', newId);
+                        }
                     }
                 },
             });
@@ -158,7 +176,9 @@ export default function Services() {
         const submitValues = {
             ...values,
             api_provider_id: values.api_provider_id === 'manual' ? null : (values.api_provider_id || null),
-            api_provider_service_id: values.api_provider_service_id || null,
+            api_provider_service_id: values.api_provider_service_id != null && values.api_provider_service_id !== ''
+                ? Number(values.api_provider_service_id)
+                : null,
         };
         if (editingItem) {
             handleEdit(submitValues);

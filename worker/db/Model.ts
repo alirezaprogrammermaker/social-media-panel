@@ -53,14 +53,19 @@ export class Model<T extends Record<string, any>> {
         return results as T[];
     }
 
-    static async create<T extends Record<string, any>>(this: any, data: T): Promise<T & { lastInsertRowid: number }> {
-        const columns = Object.keys(data);
+    static async create<T extends Record<string, any>>(this: any, data: T): Promise<T & { id: number; lastInsertRowid: number }> {
+        // D1 rejects undefined binds — coerce to null
+        const normalized = Object.fromEntries(
+            Object.entries(data).map(([k, v]) => [k, v === undefined ? null : v])
+        ) as T;
+        const columns = Object.keys(normalized);
         const placeholders = columns.map(() => '?').join(', ');
         const result = await this.db
             .prepare(`INSERT INTO ${this.table} (${columns.join(', ')}) VALUES (${placeholders})`)
-            .bind(...Object.values(data))
+            .bind(...Object.values(normalized))
             .run();
-        return { ...data, lastInsertRowid: result.meta?.last_row_id ?? 0 };
+        const id = result.meta?.last_row_id ?? 0;
+        return { ...normalized, id, lastInsertRowid: id };
     }
 
     static async update(this: any, id: string, data: Record<string, any>) {

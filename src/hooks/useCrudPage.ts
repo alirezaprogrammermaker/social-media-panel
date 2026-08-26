@@ -49,11 +49,11 @@ export function useCrudPage<T extends { id: number }>(options: UseCrudPageOption
                 credentials: 'include',
                 body: JSON.stringify(values),
             });
+            const data = await res.json().catch(() => ({}));
             if (!res.ok) {
-                message.error(`خطا ${res.status}`);
+                message.error(data.error || `خطا ${res.status}`);
                 return;
             }
-            const data = await res.json();
             if (data.ok) {
                 message.success(options.createMsg || `${options.entityName} اضافه شد`);
                 setModalOpen(false);
@@ -76,11 +76,11 @@ export function useCrudPage<T extends { id: number }>(options: UseCrudPageOption
                 credentials: 'include',
                 body: JSON.stringify(values),
             });
+            const data = await res.json().catch(() => ({}));
             if (!res.ok) {
-                message.error(`خطا ${res.status}`);
+                message.error(data.error || `خطا ${res.status}`);
                 return;
             }
-            const data = await res.json();
             if (data.ok) {
                 message.success(options.updateMsg || `${options.entityName} بروزرسانی شد`);
                 setModalOpen(false);

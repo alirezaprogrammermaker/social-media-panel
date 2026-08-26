@@ -221,32 +221,44 @@ smm.get('/services', async (c) => {
 
 smm.post('/services', async (c) => {
     try {
-        const { name, category_id, type, rate, min, max, api_provider_id, api_provider_service_id } = await c.req.json<{
+        const {
+            name, category_id, type, rate, min, max, description,
+            api_provider_id, api_provider_service_id, api_provider_service_price,
+        } = await c.req.json<{
             name: string;
             category_id: number;
             type?: string;
             rate?: string;
             min?: string;
             max?: string;
-            api_provider_id?: number;
-            api_provider_service_id?: number;
+            description?: string;
+            api_provider_id?: number | null;
+            api_provider_service_id?: number | string | null;
+            api_provider_service_price?: string | null;
         }>();
 
         if (!name || !category_id) {
             return c.json({ error: 'نام و دسته‌بندی الزامی است' }, 400);
         }
 
+        const providerServiceId = api_provider_service_id != null && api_provider_service_id !== ''
+            ? Number(api_provider_service_id)
+            : null;
+
         Service.use(c.env.DB);
         const service = await Service.create({
             name,
-            category_id,
+            description: description ?? '',
+            category_id: Number(category_id),
             type: type || 'Default',
-            rate: rate || '0',
-            min: min || '1',
-            max: max || '1000',
-            api_provider_id: api_provider_id || null,
-            api_provider_service_id: api_provider_service_id || null,
-            api_provider_service_price: null,
+            rate: rate != null && rate !== '' ? String(rate) : '0',
+            min: min != null && min !== '' ? String(min) : '1',
+            max: max != null && max !== '' ? String(max) : '1000',
+            api_provider_id: api_provider_id != null ? Number(api_provider_id) : null,
+            api_provider_service_id: providerServiceId != null && !Number.isNaN(providerServiceId) ? providerServiceId : null,
+            api_provider_service_price: api_provider_service_price != null && api_provider_service_price !== ''
+                ? String(api_provider_service_price)
+                : null,
             is_active: 1,
         });
         return c.json({ ok: true, service });
@@ -258,17 +270,18 @@ smm.post('/services', async (c) => {
 smm.put('/services/:id', async (c) => {
     try {
         const id = Number(c.req.param('id'));
-        const { name, category_id, type, rate, min, max, is_active, api_provider_id, api_provider_service_id, api_provider_service_price } = await c.req.json<{
+        const { name, category_id, type, rate, min, max, description, is_active, api_provider_id, api_provider_service_id, api_provider_service_price } = await c.req.json<{
             name?: string;
             category_id?: number;
             type?: string;
             rate?: string;
             min?: string;
             max?: string;
+            description?: string;
             is_active?: number;
             api_provider_id?: number | null;
-            api_provider_service_id?: number | null;
-            api_provider_service_price?: string;
+            api_provider_service_id?: number | string | null;
+            api_provider_service_price?: string | null;
         }>();
 
         Service.use(c.env.DB);
@@ -282,9 +295,14 @@ smm.put('/services/:id', async (c) => {
         if (rate !== undefined) updates.rate = rate;
         if (min !== undefined) updates.min = min;
         if (max !== undefined) updates.max = max;
+        if (description !== undefined) updates.description = description;
         if (is_active !== undefined) updates.is_active = is_active;
         if (api_provider_id !== undefined) updates.api_provider_id = api_provider_id;
-        if (api_provider_service_id !== undefined) updates.api_provider_service_id = api_provider_service_id;
+        if (api_provider_service_id !== undefined) {
+            updates.api_provider_service_id = api_provider_service_id != null && api_provider_service_id !== ''
+                ? Number(api_provider_service_id)
+                : null;
+        }
         if (api_provider_service_price !== undefined) updates.api_provider_service_price = api_provider_service_price;
 
         if (Object.keys(updates).length > 0) {
