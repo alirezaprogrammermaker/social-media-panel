@@ -109,10 +109,13 @@ function Update-FromGitHub([string]$BranchName, [string]$BackupPath) {
 
     Write-Step "Preparing clean merge (your wrangler.jsonc stays safe)"
 
-    # Clear dirty wrangler from the worktree so merge is not blocked; we already have a backup.
-    # Ignore failures here (older git / clean tree) - do not abort the script.
+    # Clones often mark wrangler.jsonc with skip-worktree so pulls do not overwrite DB ids.
+    # That hides local changes from git status but still blocks merge - clear it for this run.
     $prevEap = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
+    git update-index --no-skip-worktree wrangler.jsonc 2>&1 | Out-Null
+    git update-index --no-assume-unchanged wrangler.jsonc 2>&1 | Out-Null
+    # Replace worktree with HEAD copy temporarily (backup already saved).
     git checkout HEAD -- wrangler.jsonc 2>&1 | Out-Null
     $ErrorActionPreference = $prevEap
 
@@ -165,6 +168,13 @@ function Update-FromGitHub([string]$BranchName, [string]$BackupPath) {
 
     # Always force local wrangler back (remote may have another project's database_id)
     Restore-WranglerConfig $BackupPath
+
+    # Re-protect local wrangler.jsonc from accidental overwrite on future pulls
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    git update-index --skip-worktree wrangler.jsonc 2>&1 | Out-Null
+    $ErrorActionPreference = $prevEap
+    Write-Ok "Re-enabled skip-worktree on wrangler.jsonc"
 
     if ($stashed) {
         # Drop stash: merged tree is the source of truth for code.
