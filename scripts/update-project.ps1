@@ -107,6 +107,26 @@ function Update-FromGitHub([string]$BranchName, [string]$BackupPath) {
         throw "Remote branch not found: $target"
     }
 
+    Write-Step "Preparing clean merge (your wrangler.jsonc stays safe)"
+
+    # Clear dirty wrangler from the worktree so merge is not blocked; we already have a backup.
+    git restore --source=HEAD --worktree --staged -- "wrangler.jsonc" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        git checkout HEAD -- "wrangler.jsonc" 2>$null
+    }
+
+    $stashed = $false
+    $porcelain = @(git status --porcelain)
+    if ($porcelain.Count -gt 0) {
+        Write-Warn "Stashing local changes temporarily so merge can run"
+        foreach ($line in $porcelain) {
+            Write-Host "    $line"
+        }
+        git stash push -u -m "update-script-autosave"
+        if ($LASTEXITCODE -ne 0) { throw "git stash failed" }
+        $stashed = $true
+    }
+
     Write-Step "Merging $target (keeping your wrangler.jsonc)"
     git merge --no-edit $target
     $mergeExit = $LASTEXITCODE
@@ -121,19 +141,36 @@ function Update-FromGitHub([string]$BranchName, [string]$BackupPath) {
             if ($LASTEXITCODE -ne 0) {
                 git commit --no-edit
             }
-        } else {
-            Write-Err "Merge conflict in files other than wrangler.jsonc:"
+        } elseif ($unmerged.Count -gt 0) {
+            Write-Err "Merge conflict in:"
             foreach ($f in $unmerged) {
                 Write-Host "  - $f"
             }
             Write-Host "Resolve conflicts, then re-run this script."
+            if ($stashed) {
+                Write-Warn "Your previous local changes are in: git stash list"
+            }
+            throw "git merge failed"
+        } else {
+            Write-Err "git merge failed (not a conflict). See messages above."
+            if ($stashed) {
+                Write-Warn "Restoring stashed local changes..."
+                git stash pop
+            }
+            Restore-WranglerConfig $BackupPath
             throw "git merge failed"
         }
     }
 
     # Always force local wrangler back (remote may have another project's database_id)
     Restore-WranglerConfig $BackupPath
-    git status --porcelain -- wrangler.jsonc | Out-Null
+
+    if ($stashed) {
+        # Drop stash: merged tree is the source of truth for code.
+        # wrangler.jsonc was restored from backup already.
+        git stash drop
+        Write-Ok "Dropped temporary stash (code came from GitHub; wrangler.jsonc kept local)"
+    }
 }
 
 function Install-DependenciesIfNeeded {
