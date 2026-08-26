@@ -44,10 +44,10 @@ async function resolveCategoryId(
 }
 
 /**
- * Sync metadata/cost from provider without overwriting admin-controlled fields:
- * - keeps selling `rate` (toman)
- * - keeps local `name` (may be translated)
- * - keeps `category_id` (admin organization)
+ * Cron / sync update for linked services:
+ * - only writes `api_provider_service_price`
+ * - notifies admin when provider price changes (old → new)
+ * - never touches selling `rate`, name, category, min/max, etc.
  */
 async function updateLinkedServiceFromRemote(
     existing: { id?: number; name: string; api_provider_service_price?: string | null },
@@ -59,22 +59,23 @@ async function updateLinkedServiceFromRemote(
     const oldPrice = parseFloat(existing.api_provider_service_price || '0');
     const newPrice = parseFloat(remote.rate || '0');
 
-    if (Number.isFinite(newPrice) && newPrice > 0 && oldPrice !== newPrice) {
-        notifications.push(
-            `💰 ${existing.name}: ${oldPrice} → ${newPrice} ${providerCurrency}`
-        );
-        result.priceChanged++;
+    if (!Number.isFinite(newPrice) || newPrice < 0) {
+        return;
+    }
+
+    // Same price → nothing to do
+    if (oldPrice === newPrice) {
+        return;
     }
 
     await Service.update(String(existing.id!), {
-        type: remote.type,
-        min: String(remote.min ?? '1'),
-        max: String(remote.max ?? '1000'),
-        refill: remote.refill ? 1 : 0,
-        cancel: remote.cancel ? 1 : 0,
         api_provider_service_price: remote.rate,
     });
     result.updated++;
+    result.priceChanged++;
+    notifications.push(
+        `💰 ${existing.name}\nقیمت API از ${oldPrice} به ${newPrice} ${providerCurrency} تغییر کرد`
+    );
 }
 
 export async function syncServicesFromProviders(db: D1Database): Promise<SyncResult[]> {
@@ -155,7 +156,7 @@ async function sendSyncNotification(
         const more = notifications.length > maxLines
             ? `\n… و ${notifications.length - maxLines} مورد دیگر`
             : '';
-        const message = `🔄 بروزرسانی سرویس‌های ${providerName}:\n\n${lines.join('\n')}${more}`;
+        const message = `🔄 تغییر قیمت سرویس‌های ${providerName}:\n\n${lines.join('\n\n')}${more}`;
         await api.sendMessage(adminChatId, message);
     } catch (error: any) {
         console.error('Failed to send sync notification:', error.message);
