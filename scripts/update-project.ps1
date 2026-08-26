@@ -1,3 +1,4 @@
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   Updates this panel clone from GitHub and optionally deploys to Cloudflare.
@@ -50,17 +51,15 @@ function Write-Err([string]$Message) {
 function Get-JsoncObject([string]$Path) {
     if (-not (Test-Path $Path)) { return $null }
     $raw = Get-Content -Path $Path -Raw -Encoding UTF8
-    # Strip // line comments and /* */ blocks enough for wrangler.jsonc
-    $raw = [regex]::Replace($raw, '/\*.*?\*/', '', 'Singleline')
+    $raw = [regex]::Replace($raw, '/\*.*?\*/', '', [System.Text.RegularExpressions.RegexOptions]::Singleline)
     $raw = [regex]::Replace($raw, '(?m)^\s*//.*$', '')
-    # Remove trailing commas before } or ]
     $raw = [regex]::Replace($raw, ',(\s*[}\]])', '$1')
     return ($raw | ConvertFrom-Json)
 }
 
 function Get-RepoRootOrThrow {
     $inside = git rev-parse --is-inside-work-tree 2>$null
-    if ($LASTEXITCODE -ne 0 -or $inside.Trim() -ne "true") {
+    if ($LASTEXITCODE -ne 0 -or "$inside".Trim() -ne "true") {
         throw "This folder is not a git repository."
     }
 }
@@ -81,6 +80,21 @@ function Restore-WranglerConfig([string]$BackupPath) {
     Write-Ok "Restored local wrangler.jsonc (database_id preserved)"
 }
 
+function Test-OnlyWranglerConflict([string[]]$Unmerged) {
+    if ($null -eq $Unmerged -or $Unmerged.Count -eq 0) {
+        return $false
+    }
+    $hasWrangler = $false
+    foreach ($f in $Unmerged) {
+        if ($f -eq "wrangler.jsonc") {
+            $hasWrangler = $true
+        } else {
+            return $false
+        }
+    }
+    return $hasWrangler
+}
+
 function Update-FromGitHub([string]$BranchName, [string]$BackupPath) {
     Write-Step "Fetching latest from GitHub"
     git remote get-url origin | Out-Host
@@ -88,7 +102,7 @@ function Update-FromGitHub([string]$BranchName, [string]$BackupPath) {
     if ($LASTEXITCODE -ne 0) { throw "git fetch failed" }
 
     $target = "origin/$BranchName"
-    $exists = git rev-parse --verify $target 2>$null
+    git rev-parse --verify $target 2>$null | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw "Remote branch not found: $target"
     }
@@ -98,19 +112,20 @@ function Update-FromGitHub([string]$BranchName, [string]$BackupPath) {
     $mergeExit = $LASTEXITCODE
 
     if ($mergeExit -ne 0) {
-        $unmerged = git diff --name-only --diff-filter=U
-        if ($unmerged -match 'wrangler\.jsonc' -and (@($unmerged).Count -eq 1 -or ($unmerged | Where-Object { $_ -ne 'wrangler.jsonc' }).Count -eq 0)) {
-            Write-Warn "Conflict only in wrangler.jsonc — keeping your local copy"
+        $unmerged = @(git diff --name-only --diff-filter=U)
+        if (Test-OnlyWranglerConflict $unmerged) {
+            Write-Warn "Conflict only in wrangler.jsonc - keeping your local copy"
             Restore-WranglerConfig $BackupPath
             git add wrangler.jsonc
             git -c core.editor=true merge --continue
             if ($LASTEXITCODE -ne 0) {
-                # Older git may need commit after add
                 git commit --no-edit
             }
         } else {
             Write-Err "Merge conflict in files other than wrangler.jsonc:"
-            $unmerged | ForEach-Object { Write-Host "  - $_" }
+            foreach ($f in $unmerged) {
+                Write-Host "  - $f"
+            }
             Write-Host "Resolve conflicts, then re-run this script."
             throw "git merge failed"
         }
@@ -118,8 +133,6 @@ function Update-FromGitHub([string]$BranchName, [string]$BackupPath) {
 
     # Always force local wrangler back (remote may have another project's database_id)
     Restore-WranglerConfig $BackupPath
-
-    # Keep wrangler out of the index as modified-from-merge noise when identical intent
     git status --porcelain -- wrangler.jsonc | Out-Null
 }
 
@@ -128,13 +141,10 @@ function Install-DependenciesIfNeeded {
         Write-Warn "Skipping dependency install (-SkipInstall)"
         return
     }
-    Write-Step "Installing dependencies (pnpm)"
+    Write-Step "Installing dependencies"
     if (Get-Command pnpm -ErrorAction SilentlyContinue) {
         pnpm install
         if ($LASTEXITCODE -ne 0) { throw "pnpm install failed" }
-    } elseif (Test-Path (Join-Path $Root "package-lock.json")) {
-        npm install
-        if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
     } else {
         npm install
         if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
@@ -148,11 +158,13 @@ function Get-CloudflareAccountId {
         throw "wrangler whoami failed. Run: pnpm exec wrangler login"
     }
 
-    # Table cell UUID
     $match = [regex]::Match($out, '([0-9a-f]{32})')
     if (-not $match.Success) {
-        # hyphenated UUID
-        $match = [regex]::Match($out, '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', 'IgnoreCase')
+        $match = [regex]::Match(
+            $out,
+            '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})',
+            [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+        )
     }
     if (-not $match.Success) {
         Write-Host $out
@@ -215,7 +227,6 @@ function Test-CloudflareAccountForThisProject {
         return $false
     }
 
-    # Persist expected account for quicker future checks / audit
     $localCfgPath = Join-Path $Root ".update-config.local.json"
     @{
         expectedAccountId = $accountId
@@ -241,7 +252,7 @@ function Invoke-Deploy {
 
 try {
     Write-Host ""
-    Write-Host "Social Media Panel — update helper" -ForegroundColor White
+    Write-Host "Social Media Panel - update helper" -ForegroundColor White
     Write-Host "Root: $Root"
 
     Get-RepoRootOrThrow
@@ -274,11 +285,4 @@ try {
 catch {
     Write-Err $_.Exception.Message
     exit 1
-}
-finally {
-    # Keep bak file for debugging one run; remove if restore succeeded and clean
-    $bak = Join-Path $Root "wrangler.jsonc.bak-update"
-    if ((Test-Path $bak) -and (Test-Path (Join-Path $Root "wrangler.jsonc"))) {
-        # leave backup until next successful run overwrites it
-    }
 }
