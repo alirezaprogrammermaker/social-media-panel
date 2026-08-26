@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { Layout as AntLayout, Menu, Avatar, Dropdown, Button } from 'antd';
 import { LogoutOutlined, MenuFoldOutlined, MenuUnfoldOutlined, CalendarOutlined } from '@ant-design/icons';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
-import { navItems } from '../nav';
+import { navItems, navGroupOrder } from '../nav';
 import { useAuth } from '../context/AuthContext';
 import { getJalaliDateTime } from '../utils/jalali';
 
@@ -41,7 +41,7 @@ export function Layout() {
         }
     }, [location.pathname, isMobile]);
 
-    // Group nav items
+    // Group nav items in defined order so all sections stay complete and consistent
     const groups = navItems.reduce((acc, item) => {
         const group = item.group || 'سایر';
         if (!acc[group]) acc[group] = [];
@@ -49,10 +49,15 @@ export function Layout() {
         return acc;
     }, {} as Record<string, typeof navItems>);
 
-    const menuItems = Object.entries(groups).map(([group, items]) => ({
+    const orderedGroupKeys = [
+        ...navGroupOrder.filter((g) => groups[g]?.length),
+        ...Object.keys(groups).filter((g) => !(navGroupOrder as readonly string[]).includes(g)),
+    ];
+
+    const menuItems = orderedGroupKeys.map((group) => ({
         type: 'group' as const,
         label: group,
-        children: items.map(({ path, label, icon: Icon }) => ({
+        children: groups[group].map(({ path, label, icon: Icon }) => ({
             key: path,
             icon: <Icon />,
             label,
@@ -96,6 +101,7 @@ export function Layout() {
                 trigger={null}
                 theme="light"
                 width={260}
+                className="app-sider"
                 style={{
                     borderInlineEnd: '1px solid #eef0f3',
                     ...(isMobile
@@ -106,15 +112,21 @@ export function Layout() {
                               left: 'auto',
                               bottom: 0,
                               zIndex: 100,
-                              height: '100vh',
+                              height: '100dvh',
+                              maxHeight: '100dvh',
                           }
-                        : {}),
+                        : {
+                              height: '100vh',
+                              position: 'sticky',
+                              top: 0,
+                          }),
                 }}
             >
                 <div
                     style={{
                         height: 48,
-                        margin: 16,
+                        margin: '16px 16px 8px',
+                        flexShrink: 0,
                         fontWeight: 600,
                         fontSize: 16,
                         color: '#4f46e5',
@@ -131,6 +143,7 @@ export function Layout() {
                     selectedKeys={[location.pathname]}
                     items={menuItems}
                     onClick={handleMenuClick}
+                    style={{ borderInlineEnd: 'none', paddingBottom: isMobile ? 32 : 16 }}
                 />
             </Sider>
 

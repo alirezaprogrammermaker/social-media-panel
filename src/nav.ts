@@ -23,28 +23,40 @@ export type NavItem = {
     group?: string;
 };
 
+/** Ordered group keys — controls sidebar section order */
+export const navGroupOrder = [
+    'اصلی',
+    'پنل SMM',
+    'تلگرام',
+    'مالی',
+    'هوش مصنوعی',
+    'سیستم',
+] as const;
+
 export const navItems: NavItem[] = [
-    // Main
+    // اصلی
     { path: '/', label: 'داشبورد', icon: DashboardOutlined, group: 'اصلی' },
 
-    // SMM Panel
-    { path: '/api-providers', label: 'ارائه‌دهندگان API', icon: ApiOutlined, group: 'پنل SMM' },
-    { path: '/categories', label: 'دسته‌بندی‌ها', icon: AppstoreOutlined, group: 'پنل SMM' },
-    { path: '/services', label: 'سرویس‌ها', icon: ShoppingOutlined, group: 'پنل SMM' },
+    // پنل SMM
     { path: '/orders', label: 'سفارشات', icon: OrderedListOutlined, group: 'پنل SMM' },
+    { path: '/services', label: 'سرویس‌ها', icon: ShoppingOutlined, group: 'پنل SMM' },
+    { path: '/categories', label: 'دسته‌بندی‌ها', icon: AppstoreOutlined, group: 'پنل SMM' },
+    { path: '/api-providers', label: 'ارائه‌دهندگان API', icon: ApiOutlined, group: 'پنل SMM' },
 
-    // Telegram
+    // تلگرام
     { path: '/telegram-users', label: 'کاربران تلگرام', icon: TeamOutlined, group: 'تلگرام' },
     { path: '/telegram-sessions', label: 'نشست‌های تلگرام', icon: MessageOutlined, group: 'تلگرام' },
     { path: '/bot-channels', label: 'کانال‌های ربات', icon: WechatOutlined, group: 'تلگرام' },
     { path: '/bot-helps', label: 'راهنمای ربات', icon: QuestionCircleOutlined, group: 'تلگرام' },
 
-    // Finance & AI
-    { path: '/payment-methods', label: 'روش‌های پرداخت', icon: WalletOutlined, group: 'مالی و هوش مصنوعی' },
-    { path: '/payments', label: 'پرداخت‌ها', icon: DollarOutlined, group: 'مالی و هوش مصنوعی' },
-    { path: '/ai-settings', label: 'هوش مصنوعی', icon: RobotOutlined, group: 'مالی و هوش مصنوعی' },
+    // مالی
+    { path: '/payments', label: 'پرداخت‌ها', icon: DollarOutlined, group: 'مالی' },
+    { path: '/payment-methods', label: 'روش‌های پرداخت', icon: WalletOutlined, group: 'مالی' },
 
-    // Settings
+    // هوش مصنوعی
+    { path: '/ai-settings', label: 'تنظیمات هوش مصنوعی', icon: RobotOutlined, group: 'هوش مصنوعی' },
+
+    // سیستم
     { path: '/settings', label: 'تنظیمات', icon: SettingOutlined, group: 'سیستم' },
     { path: '/export-import', label: 'خروجی / ورودی', icon: ImportOutlined, group: 'سیستم' },
 ];
