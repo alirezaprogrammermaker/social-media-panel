@@ -62,7 +62,7 @@ auth.post('/signup', async (c) => {
             id: userId,
             email,
             password_hash: await hashPassword(password),
-            role: 'user',
+            role: 'admin',
         });
 
         const sessionId = crypto.randomUUID();

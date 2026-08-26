@@ -47,11 +47,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         loading,
         login: async (email, password) => {
             await api('/auth/login', { email, password });
-            await refresh();
+            try {
+                setUser(await api('/dashboard/me'));
+            } catch {
+                setUser(null);
+                throw new Error('ورود موفق بود ولی نشست تأیید نشد. دوباره تلاش کن.');
+            } finally {
+                setLoading(false);
+            }
         },
         signup: async (email, password) => {
             await api('/auth/signup', { email, password });
-            await refresh();
+            try {
+                setUser(await api('/dashboard/me'));
+            } catch {
+                setUser(null);
+                throw new Error('ثبت‌نام انجام شد ولی نشست تأیید نشد. از صفحه ورود وارد شو.');
+            } finally {
+                setLoading(false);
+            }
         },
         logout: async () => {
             await api('/auth/logout', {});

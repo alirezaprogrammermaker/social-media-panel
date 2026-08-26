@@ -15,11 +15,12 @@ import type { Bindings, Variables } from '../types';
 const dashboard = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
 dashboard.use('*', requireAuth);
-dashboard.use('*', requireAdmin);
 
 dashboard.get('/me', (c) => {
     return c.json(c.get('user'));
 });
+
+dashboard.use('*', requireAdmin);
 
 // --- Telegram Users ---
 
