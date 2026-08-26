@@ -46,7 +46,8 @@ export default function Services() {
                 aiApi.getSettings().catch(() => ({})),
             ]);
             setProviders(provRes);
-            if (settingsRes.dollar_rate) setDollarRate(Number(settingsRes.dollar_rate));
+            const rate = settingsRes.dollarRate ?? settingsRes.dollar_rate;
+            if (rate) setDollarRate(Number(rate));
             if (aiSettingsRes?.admin) {
                 setTranslationSettings({
                     translatePrompt: aiSettingsRes.admin.ai_admin_translate_prompt || '',
