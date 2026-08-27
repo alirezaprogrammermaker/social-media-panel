@@ -76,9 +76,7 @@ export const MESSAGES = {
 
     // Payment
     SELECT_PAYMENT_METHOD: '💳 روش پرداخت را انتخاب کنید:',
-    NO_PAYMENT_METHODS: 'در حال حاضر روش پرداختی فعال نیست.',
-    NO_PAYMENT_METHODS_CRYPTO_HINT:
-        'در حال حاضر روش پرداختی فعال نیست.\n\nاگر درگاه کریپتو را وصل کرده‌اید، از داشبورد → تنظیمات → درگاه کریپتو کلید API (cg_...) را ذخیره کنید و روش «پرداخت کریپتو» را در روش‌های پرداخت فعال نگه دارید.',
+    NO_PAYMENT_METHODS: 'در حال حاضر روش پرداختی فعال نیست. لطفاً بعداً دوباره تلاش کنید.',
     ENTER_AMOUNT: (cardNumber: string, cardHolder: string) =>
         `💳 پرداخت کارت به کارت\n\n` +
         `📌 شماره کارت: <code>${cardNumber}</code>\n` +
@@ -100,8 +98,8 @@ export const MESSAGES = {
 
     // Crypto payment
     SELECT_CRYPTO_NETWORK: '🌐 شبکه پرداخت کریپتو را انتخاب کنید:\n(پیشنهادی: USDT TRC20)',
-    CRYPTO_GATEWAY_NOT_CONFIGURED: '❌ درگاه کریپتو پیکربندی نشده است. با مدیر تماس بگیرید.',
-    CRYPTO_DOLLAR_RATE_MISSING: '❌ نرخ دلار تنظیم نشده است. لطفاً بعداً تلاش کنید.',
+    CRYPTO_GATEWAY_NOT_CONFIGURED: '❌ این روش پرداخت در حال حاضر در دسترس نیست. لطفاً روش دیگری انتخاب کنید یا بعداً تلاش کنید.',
+    CRYPTO_DOLLAR_RATE_MISSING: '❌ این روش پرداخت در حال حاضر در دسترس نیست. لطفاً بعداً تلاش کنید.',
     CRYPTO_CREATE_FAILED: (error: string) => `❌ ایجاد پرداخت کریپتو ناموفق بود.\n\n${error}`,
     CRYPTO_PAYMENT_CREATED: (
         amountToman: number,

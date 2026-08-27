@@ -1,7 +1,7 @@
 import { InlineKeyboard } from 'grammy';
 import { TelegramUser } from '../../db/TelegramUser';
 import { BotChannel } from '../../db/BotChannel';
-import { helpKeyboard } from '../keyboards';
+import { mainMenuKeyboard } from '../keyboards';
 import { MESSAGES } from '../constants';
 import { checkMembership } from '../state';
 import type { Api } from 'grammy';
@@ -43,7 +43,7 @@ export async function handleStart(
     }
 
     await ctx.reply(MESSAGES.WELCOME(first_name), {
-        reply_markup: helpKeyboard(),
+        reply_markup: await mainMenuKeyboard(db, userId),
     });
     return true;
 }

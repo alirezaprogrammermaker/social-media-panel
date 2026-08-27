@@ -6,6 +6,7 @@ import { Setting } from '../../db/Setting';
 import { paymentState } from '../state';
 import {
     helpKeyboard,
+    mainMenuKeyboard,
     paymentMethodKeyboard,
     paymentAmountKeyboard,
     paymentReceiptKeyboard,
@@ -123,7 +124,7 @@ export async function handleAddBalance(ctx: any, db: D1Database, env?: Bindings)
 
     if (isUserBanned(userId)) {
         const remaining = getBanRemaining(userId);
-        await ctx.reply(`🚫 شما به مدت ${remaining} دقیقه از ارسال رسید محروم هستید.`, { reply_markup: helpKeyboard() });
+        await ctx.reply(`🚫 شما به مدت ${remaining} دقیقه از ارسال رسید محروم هستید.`, { reply_markup: await mainMenuKeyboard(db, userId) });
         return;
     }
 
@@ -151,11 +152,7 @@ export async function handleAddBalance(ctx: any, db: D1Database, env?: Bindings)
     }
 
     if (methods.length === 0) {
-        if (!cryptoEnabled) {
-            await ctx.reply(MESSAGES.NO_PAYMENT_METHODS_CRYPTO_HINT, { reply_markup: helpKeyboard() });
-        } else {
-            await ctx.reply(MESSAGES.NO_PAYMENT_METHODS, { reply_markup: helpKeyboard() });
-        }
+        await ctx.reply(MESSAGES.NO_PAYMENT_METHODS, { reply_markup: await mainMenuKeyboard(db, userId) });
         return;
     }
 
@@ -188,7 +185,7 @@ export async function handlePaymentMethodSelect(ctx: any, db: D1Database, userId
 
     if (PaymentMethod.isCryptoMethod(selected)) {
         if (!env || !(await isCryptoGatewayConfigured(db, env))) {
-            await ctx.reply(MESSAGES.CRYPTO_GATEWAY_NOT_CONFIGURED, { reply_markup: helpKeyboard() });
+            await ctx.reply(MESSAGES.CRYPTO_GATEWAY_NOT_CONFIGURED, { reply_markup: await mainMenuKeyboard(db, userId) });
             paymentState.delete(userId);
             return true;
         }
@@ -277,7 +274,7 @@ export async function handlePaymentAmount(ctx: any, userId: number, text: string
 
     if (state.isCrypto) {
         if (!db || !env) {
-            await ctx.reply(MESSAGES.CRYPTO_GATEWAY_NOT_CONFIGURED, { reply_markup: helpKeyboard() });
+            await ctx.reply(MESSAGES.CRYPTO_GATEWAY_NOT_CONFIGURED, { reply_markup: helpKeyboard(false) });
             paymentState.delete(userId);
             return true;
         }
@@ -312,7 +309,7 @@ async function createCryptoTopUp(
     const networkId = state.networkId || DEFAULT_CRYPTO_NETWORK;
 
     if (!(await isCryptoGatewayConfigured(db, env))) {
-        await ctx.reply(MESSAGES.CRYPTO_GATEWAY_NOT_CONFIGURED, { reply_markup: helpKeyboard() });
+        await ctx.reply(MESSAGES.CRYPTO_GATEWAY_NOT_CONFIGURED, { reply_markup: await mainMenuKeyboard(db, userId) });
         paymentState.delete(userId);
         return;
     }
@@ -321,7 +318,7 @@ async function createCryptoTopUp(
     const dollarRateRaw = await Setting.get('dollar_rate');
     const dollarRate = parseFloat(dollarRateRaw || '0');
     if (!dollarRate || dollarRate <= 0) {
-        await ctx.reply(MESSAGES.CRYPTO_DOLLAR_RATE_MISSING, { reply_markup: helpKeyboard() });
+        await ctx.reply(MESSAGES.CRYPTO_DOLLAR_RATE_MISSING, { reply_markup: await mainMenuKeyboard(db, userId) });
         paymentState.delete(userId);
         return;
     }
@@ -337,7 +334,7 @@ async function createCryptoTopUp(
     if (!methodId) {
         const cryptoMethod = await PaymentMethod.findCryptoMethod();
         if (!cryptoMethod) {
-            await ctx.reply(MESSAGES.CRYPTO_GATEWAY_NOT_CONFIGURED, { reply_markup: helpKeyboard() });
+            await ctx.reply(MESSAGES.CRYPTO_GATEWAY_NOT_CONFIGURED, { reply_markup: await mainMenuKeyboard(db, userId) });
             paymentState.delete(userId);
             return;
         }
@@ -424,7 +421,7 @@ async function createCryptoTopUp(
         const msg = e instanceof CryptoGatewayError ? e.message : (e?.message || 'خطای ناشناخته');
         await Payment.markCryptoTerminal(localId, 'failed', 'failed', msg);
         paymentState.delete(userId);
-        await ctx.reply(MESSAGES.CRYPTO_CREATE_FAILED(msg), { reply_markup: helpKeyboard() });
+        await ctx.reply(MESSAGES.CRYPTO_CREATE_FAILED(msg), { reply_markup: await mainMenuKeyboard(db, userId) });
     }
 }
 
@@ -441,7 +438,7 @@ export async function handleCryptoStatusCheck(ctx: any, db: D1Database, env: Bin
     }
 
     if (!localId) {
-        await ctx.reply(MESSAGES.CRYPTO_NO_PENDING, { reply_markup: helpKeyboard() });
+        await ctx.reply(MESSAGES.CRYPTO_NO_PENDING, { reply_markup: await mainMenuKeyboard(db, userId) });
         paymentState.delete(userId);
         return true;
     }
@@ -457,19 +454,19 @@ export async function handleCryptoStatusCheck(ctx: any, db: D1Database, env: Bin
     const payment = result.payment as any;
     if (payment?.status === 'approved') {
         paymentState.delete(userId);
-        await ctx.reply(MESSAGES.CRYPTO_PAYMENT_CONFIRMED(payment.amount), { reply_markup: helpKeyboard() });
+        await ctx.reply(MESSAGES.CRYPTO_PAYMENT_CONFIRMED(payment.amount), { reply_markup: await mainMenuKeyboard(db, userId) });
         return true;
     }
 
     if (payment?.status === 'expired' || payment?.crypto_status === 'expired') {
         paymentState.delete(userId);
-        await ctx.reply(MESSAGES.CRYPTO_PAYMENT_EXPIRED, { reply_markup: helpKeyboard() });
+        await ctx.reply(MESSAGES.CRYPTO_PAYMENT_EXPIRED, { reply_markup: await mainMenuKeyboard(db, userId) });
         return true;
     }
 
     if (payment?.status === 'failed' || payment?.crypto_status === 'failed') {
         paymentState.delete(userId);
-        await ctx.reply(MESSAGES.CRYPTO_PAYMENT_FAILED, { reply_markup: helpKeyboard() });
+        await ctx.reply(MESSAGES.CRYPTO_PAYMENT_FAILED, { reply_markup: await mainMenuKeyboard(db, userId) });
         return true;
     }
 
@@ -536,7 +533,7 @@ export async function handlePaymentReceipt(ctx: any, db: D1Database, userId: num
                                 await ctx.reply(
                                     `🚫 شما به مدت ${banHours} ساعت از ارسال رسید محروم شدید.\n\n` +
                                     `علت: ارسال عکس نامعتبر (${maxAttempts} بار متوالی)`,
-                                    { reply_markup: helpKeyboard() }
+                                    { reply_markup: await mainMenuKeyboard(db, userId) }
                                 );
                                 paymentState.delete(userId);
                                 return true;
@@ -614,7 +611,7 @@ export async function handlePaymentReceipt(ctx: any, db: D1Database, userId: num
         }
     }
 
-    await ctx.reply(MESSAGES.PAYMENT_SUBMITTED, { reply_markup: helpKeyboard() });
+    await ctx.reply(MESSAGES.PAYMENT_SUBMITTED, { reply_markup: await mainMenuKeyboard(db, userId) });
     return true;
 }
 
@@ -660,7 +657,7 @@ export async function handlePaymentBack(ctx: any, db: D1Database, userId: number
 
     if (state.step === 'receipt' || state.step === 'amount' || state.step === 'crypto_waiting') {
         paymentState.delete(userId);
-        await ctx.reply('❌ افزایش موجودی لغو شد.', { reply_markup: helpKeyboard() });
+        await ctx.reply('❌ افزایش موجودی لغو شد.', { reply_markup: await mainMenuKeyboard(db, userId) });
         return true;
     }
 

@@ -1,6 +1,6 @@
 import { Order } from '../../db/Order';
 import { myOrdersState } from '../state';
-import { helpKeyboard, orderListKeyboard, orderDetailKeyboard, ITEMS_PER_PAGE } from '../keyboards';
+import { orderListKeyboard, orderDetailKeyboard, ITEMS_PER_PAGE, mainMenuKeyboard } from '../keyboards';
 import { MESSAGES } from '../constants';
 
 const statusLabels: Record<string, string> = {
@@ -36,7 +36,7 @@ export async function handleMyOrders(ctx: any, db: D1Database, userId: number) {
     const orders = await Order.getUserOrders(userId);
 
     if (orders.length === 0) {
-        await ctx.reply(MESSAGES.MY_ORDERS_EMPTY, { reply_markup: helpKeyboard() });
+        await ctx.reply(MESSAGES.MY_ORDERS_EMPTY, { reply_markup: await mainMenuKeyboard(db, userId) });
         return;
     }
 
@@ -130,7 +130,7 @@ export async function handleMyOrdersBack(ctx: any, db: D1Database, userId: numbe
     if (state.step === 'list') {
         // Exit to main menu
         myOrdersState.delete(userId);
-        await ctx.reply(MESSAGES.AI_EXIT, { reply_markup: helpKeyboard() });
+        await ctx.reply(MESSAGES.AI_EXIT, { reply_markup: await mainMenuKeyboard(db, userId) });
         return true;
     }
 

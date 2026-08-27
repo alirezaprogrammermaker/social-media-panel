@@ -3,8 +3,8 @@ import { BUTTONS } from './constants';
 
 export const ITEMS_PER_PAGE = 8;
 
-export function helpKeyboard() {
-    return new Keyboard()
+export function helpKeyboard(isAdmin = false) {
+    const kb = new Keyboard()
         .text(BUTTONS.NEW_ORDER)
         .text(BUTTONS.MY_ORDERS)
         .row()
@@ -14,10 +14,22 @@ export function helpKeyboard() {
         .text(BUTTONS.AI_CHAT)
         .text(BUTTONS.HELP)
         .row()
-        .text(BUTTONS.STATS)
-        .text(BUTTONS.SUPPORT)
-        .resized()
-        .persistent();
+        .text(BUTTONS.SUPPORT);
+
+    // Admin-only: never show to regular customers
+    if (isAdmin) {
+        kb.row().text(BUTTONS.STATS);
+    }
+
+    return kb.resized().persistent();
+}
+
+/** Main menu keyboard for a Telegram user (hides admin buttons for non-admins). */
+export async function mainMenuKeyboard(db: D1Database, chatId: number) {
+    const { TelegramUser } = await import('../db/TelegramUser');
+    TelegramUser.use(db);
+    const user = await TelegramUser.findBy<{ role?: string }>('chat_id', chatId);
+    return helpKeyboard(user?.role === 'admin');
 }
 
 export function backKeyboard() {

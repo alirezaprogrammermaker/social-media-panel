@@ -39,7 +39,7 @@ import {
     handleMyOrdersBack,
     handleMyOrdersExit,
 } from './handlers/myOrders';
-import { helpKeyboard } from './keyboards';
+import { mainMenuKeyboard } from './keyboards';
 import type { Bindings } from '../types';
 
 const telegram = new Hono<{ Bindings: Bindings }>();
@@ -104,7 +104,7 @@ telegram.post('/webhook', async (c) => {
 
                 if (text === BUTTONS.BACK) {
                     if (aiChatState.has(userId)) {
-                        await handleAiExit(ctx, userId);
+                        await handleAiExit(ctx, c.env.DB, userId);
                         return;
                     }
 
@@ -126,7 +126,7 @@ telegram.post('/webhook', async (c) => {
                 if (text && text.includes('لغو افزایش موجودی')) {
                     if (paymentState.has(userId)) {
                         paymentState.delete(userId);
-                        await ctx.reply('❌ افزایش موجودی لغو شد.', { reply_markup: helpKeyboard() });
+                        await ctx.reply('❌ افزایش موجودی لغو شد.', { reply_markup: await mainMenuKeyboard(c.env.DB, userId) });
                         return;
                     }
                 }
@@ -137,7 +137,7 @@ telegram.post('/webhook', async (c) => {
                 }
 
                 if (text === BUTTONS.CANCEL_ORDER) {
-                    const handled = await handleOrderCancel(ctx, userId);
+                    const handled = await handleOrderCancel(ctx, c.env.DB, userId);
                     if (handled) return;
                 }
 
@@ -160,9 +160,9 @@ telegram.post('/webhook', async (c) => {
                     Setting.use(c.env.DB);
                     const supportText = await Setting.get('support_message');
                     if (supportText) {
-                        await ctx.reply(supportText, { reply_markup: helpKeyboard() });
+                        await ctx.reply(supportText, { reply_markup: await mainMenuKeyboard(c.env.DB, userId) });
                     } else {
-                        await ctx.reply('💬 پشتیبانی: با مدیر تماس بگیرید.', { reply_markup: helpKeyboard() });
+                        await ctx.reply('💬 پشتیبانی: با مدیر تماس بگیرید.', { reply_markup: await mainMenuKeyboard(c.env.DB, userId) });
                     }
                     return;
                 }

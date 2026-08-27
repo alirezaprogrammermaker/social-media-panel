@@ -5,7 +5,7 @@ import { ApiProvider } from '../../db/ApiProvider';
 import { TelegramUser } from '../../db/TelegramUser';
 import { SmmApiProvider } from '../../api/SmmApiProvider';
 import { orderState } from '../state';
-import { helpKeyboard, categoryKeyboard, serviceKeyboard, orderBackKeyboard, ITEMS_PER_PAGE } from '../keyboards';
+import { categoryKeyboard, serviceKeyboard, orderBackKeyboard, ITEMS_PER_PAGE, mainMenuKeyboard } from '../keyboards';
 import { MESSAGES } from '../constants';
 import { nowTehran } from '../../utils/date';
 import { calculateCustomerCharge } from '../../utils/pricing';
@@ -15,7 +15,7 @@ export async function handleOrderStart(ctx: any, db: D1Database, userId: number)
     const categories = await Category.getActiveCategories();
 
     if (categories.length === 0) {
-        await ctx.reply(MESSAGES.NO_CATEGORIES, { reply_markup: helpKeyboard() });
+        await ctx.reply(MESSAGES.NO_CATEGORIES, { reply_markup: await mainMenuKeyboard(db, userId) });
         return;
     }
 
@@ -25,10 +25,10 @@ export async function handleOrderStart(ctx: any, db: D1Database, userId: number)
     });
 }
 
-export async function handleOrderCancel(ctx: any, userId: number) {
+export async function handleOrderCancel(ctx: any, db: D1Database, userId: number) {
     if (orderState.has(userId)) {
         orderState.delete(userId);
-        await ctx.reply(MESSAGES.ORDER_CANCELLED, { reply_markup: helpKeyboard() });
+        await ctx.reply(MESSAGES.ORDER_CANCELLED, { reply_markup: await mainMenuKeyboard(db, userId) });
         return true;
     }
     return false;
@@ -40,7 +40,7 @@ export async function handleOrderBack(ctx: any, db: D1Database, userId: number) 
 
     if (state.step === 'select_category') {
         orderState.delete(userId);
-        await ctx.reply(MESSAGES.AI_EXIT, { reply_markup: helpKeyboard() });
+        await ctx.reply(MESSAGES.AI_EXIT, { reply_markup: await mainMenuKeyboard(db, userId) });
         return true;
     }
 
@@ -137,7 +137,7 @@ export async function handleCategorySelect(ctx: any, db: D1Database, userId: num
     const services = await Service.getActiveByCategory(category.id!);
 
     if (services.length === 0) {
-        await ctx.reply(MESSAGES.NO_SERVICES, { reply_markup: helpKeyboard() });
+        await ctx.reply(MESSAGES.NO_SERVICES, { reply_markup: await mainMenuKeyboard(db, userId) });
         orderState.delete(userId);
         return;
     }
@@ -323,7 +323,7 @@ async function createOrder(
     );
 
     if (!service) {
-        await ctx.reply(MESSAGES.SERVICE_NOT_FOUND_SIMPLE, { reply_markup: helpKeyboard() });
+        await ctx.reply(MESSAGES.SERVICE_NOT_FOUND_SIMPLE, { reply_markup: await mainMenuKeyboard(db, userId) });
         orderState.delete(userId);
         return;
     }
@@ -333,7 +333,7 @@ async function createOrder(
     const quantityValue = isPackage ? 1 : (quantity || 0);
 
     if (!isPackage && (!quantityValue || quantityValue <= 0)) {
-        await ctx.reply(MESSAGES.INVALID_NUMBER, { reply_markup: helpKeyboard() });
+        await ctx.reply(MESSAGES.INVALID_NUMBER, { reply_markup: await mainMenuKeyboard(db, userId) });
         orderState.delete(userId);
         return;
     }
@@ -347,7 +347,7 @@ async function createOrder(
     if (totalCost > 0 && (!user || (user.balance || 0) < totalCost)) {
         await ctx.reply(
             MESSAGES.INSUFFICIENT_BALANCE(totalCost, user?.balance || 0),
-            { reply_markup: helpKeyboard() }
+            { reply_markup: await mainMenuKeyboard(db, userId) }
         );
         orderState.delete(userId);
         return;
@@ -362,7 +362,7 @@ async function createOrder(
         const provider = await ApiProvider.findActiveById(service.api_provider_id);
 
         if (!provider) {
-            await ctx.reply(MESSAGES.PROVIDER_ERROR('ارائه‌دهنده غیرفعال یا یافت نشد'), { reply_markup: helpKeyboard() });
+            await ctx.reply(MESSAGES.PROVIDER_ERROR('ارائه‌دهنده غیرفعال یا یافت نشد'), { reply_markup: await mainMenuKeyboard(db, userId) });
             orderState.delete(userId);
             return;
         }
@@ -393,7 +393,7 @@ async function createOrder(
             } else {
                 await ctx.reply(
                     MESSAGES.PROVIDER_ERROR(result.error || 'پاسخ نامعتبر از ارائه‌دهنده'),
-                    { reply_markup: helpKeyboard() }
+                    { reply_markup: await mainMenuKeyboard(db, userId) }
                 );
                 orderState.delete(userId);
                 return;
@@ -402,7 +402,7 @@ async function createOrder(
             console.error('API order error:', error);
             await ctx.reply(
                 MESSAGES.PROVIDER_ERROR(error?.message || 'خطا در ارتباط با ارائه‌دهنده'),
-                { reply_markup: helpKeyboard() }
+                { reply_markup: await mainMenuKeyboard(db, userId) }
             );
             orderState.delete(userId);
             return;
@@ -458,7 +458,7 @@ async function createOrder(
 
                 await ctx.reply(
                     MESSAGES.INSUFFICIENT_BALANCE(totalCost, user?.balance || 0),
-                    { reply_markup: helpKeyboard() }
+                    { reply_markup: await mainMenuKeyboard(db, userId) }
                 );
                 orderState.delete(userId);
                 return;
@@ -493,7 +493,7 @@ async function createOrder(
                 console.error('Failed to cancel provider order after DB failure:', cancelError);
             }
         }
-        await ctx.reply('❌ خطا در ایجاد سفارش. لطفا دوباره تلاش کنید.', { reply_markup: helpKeyboard() });
+        await ctx.reply('❌ خطا در ایجاد سفارش. لطفا دوباره تلاش کنید.', { reply_markup: await mainMenuKeyboard(db, userId) });
         orderState.delete(userId);
         return;
     }
@@ -508,6 +508,6 @@ async function createOrder(
 
     await ctx.reply(
         MESSAGES.ORDER_SUCCESS(state.serviceName, state.link, isPackage ? 'پکیج' : storedQuantity, dbOrderId),
-        { parse_mode: 'HTML', reply_markup: helpKeyboard() }
+        { parse_mode: 'HTML', reply_markup: await mainMenuKeyboard(db, userId) }
     );
 }

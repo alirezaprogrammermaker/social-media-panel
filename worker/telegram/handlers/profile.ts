@@ -1,6 +1,6 @@
 import { TelegramUser } from '../../db/TelegramUser';
 import { Order } from '../../db/Order';
-import { helpKeyboard } from '../keyboards';
+import { mainMenuKeyboard } from '../keyboards';
 import { MESSAGES } from '../constants';
 
 function toPersianDigits(num: number | string): string {
@@ -27,7 +27,7 @@ export async function handleProfile(ctx: any, db: D1Database, userId: number) {
     const user = await TelegramUser.findByChatId(userId) as any;
 
     if (!user) {
-        await ctx.reply('❌ پروفایل شما یافت نشد.', { reply_markup: helpKeyboard() });
+        await ctx.reply('❌ پروفایل شما یافت نشد.', { reply_markup: await mainMenuKeyboard(db, userId) });
         return;
     }
 
@@ -66,6 +66,6 @@ export async function handleProfile(ctx: any, db: D1Database, userId: number) {
 
     await ctx.reply(message, {
         parse_mode: 'HTML',
-        reply_markup: helpKeyboard(),
+        reply_markup: await mainMenuKeyboard(db, userId),
     });
 }

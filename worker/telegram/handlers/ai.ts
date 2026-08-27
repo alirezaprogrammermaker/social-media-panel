@@ -1,7 +1,7 @@
 import { AiSetting, AiUsageLog } from '../../db/AiSetting';
 import { BotHelp } from '../../db/BotHelp';
 import { aiChatState } from '../state';
-import { backKeyboard, helpKeyboard } from '../keyboards';
+import { backKeyboard, mainMenuKeyboard } from '../keyboards';
 import { MESSAGES } from '../constants';
 
 export async function handleAiEnter(ctx: any, userId: number) {
@@ -9,9 +9,9 @@ export async function handleAiEnter(ctx: any, userId: number) {
     await ctx.reply(MESSAGES.AI_ENTER, { reply_markup: backKeyboard() });
 }
 
-export async function handleAiExit(ctx: any, userId: number) {
+export async function handleAiExit(ctx: any, db: D1Database, userId: number) {
     aiChatState.delete(userId);
-    await ctx.reply(MESSAGES.AI_EXIT, { reply_markup: helpKeyboard() });
+    await ctx.reply(MESSAGES.AI_EXIT, { reply_markup: await mainMenuKeyboard(db, userId) });
 }
 
 export async function handleAiMessage(
@@ -27,7 +27,7 @@ export async function handleAiMessage(
 
         if (aiEnabled !== 'true') {
             aiChatState.delete(userId);
-            await ctx.reply(MESSAGES.AI_DISABLED, { reply_markup: helpKeyboard() });
+            await ctx.reply(MESSAGES.AI_DISABLED, { reply_markup: await mainMenuKeyboard(db, userId) });
             return;
         }
 
@@ -39,7 +39,7 @@ export async function handleAiMessage(
             const todayUsage = await AiUsageLog.getTodayUsageByChatId(userId);
             if (todayUsage.totalRequests >= dailyLimit) {
                 aiChatState.delete(userId);
-                await ctx.reply(MESSAGES.AI_DAILY_LIMIT(dailyLimit), { reply_markup: helpKeyboard() });
+                await ctx.reply(MESSAGES.AI_DAILY_LIMIT(dailyLimit), { reply_markup: await mainMenuKeyboard(db, userId) });
                 return;
             }
         }
@@ -78,10 +78,10 @@ export async function handleAiMessage(
         await AiUsageLog.logUsage('user', userId, maxTokens);
 
         aiChatState.delete(userId);
-        await ctx.reply(responseText, { reply_markup: helpKeyboard() });
+        await ctx.reply(responseText, { reply_markup: await mainMenuKeyboard(db, userId) });
     } catch (aiError) {
         console.error('AI error:', aiError);
         aiChatState.delete(userId);
-        await ctx.reply(MESSAGES.AI_ERROR, { reply_markup: helpKeyboard() });
+        await ctx.reply(MESSAGES.AI_ERROR, { reply_markup: await mainMenuKeyboard(db, userId) });
     }
 }

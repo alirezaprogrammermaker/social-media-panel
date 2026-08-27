@@ -1,15 +1,19 @@
 import { InlineKeyboard } from 'grammy';
 import { BotHelp } from '../../db/BotHelp';
-import { helpKeyboard } from '../keyboards';
+import { helpKeyboard, mainMenuKeyboard } from '../keyboards';
 import { MESSAGES } from '../constants';
 
 export async function handleHelp(ctx: any, db: D1Database) {
+    const userId = ctx.from?.id;
     BotHelp.use(db);
     const helps = await BotHelp.all<{ id: number; name: string; description: string; sort_order: number }>();
     helps.sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.id - b.id);
 
     if (helps.length === 0) {
-        await ctx.reply(MESSAGES.NO_HELP, { reply_markup: helpKeyboard() });
+        await ctx.reply(
+            MESSAGES.NO_HELP,
+            { reply_markup: userId ? await mainMenuKeyboard(db, userId) : helpKeyboard(false) },
+        );
         return;
     }
 
