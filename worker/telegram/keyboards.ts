@@ -21,7 +21,7 @@ export function helpKeyboard(isAdmin = false) {
         kb.row().text(BUTTONS.STATS);
     }
 
-    return kb.resized().persistent();
+    return kb.resized();
 }
 
 /** Main menu keyboard for a Telegram user (hides admin buttons for non-admins). */
@@ -35,8 +35,7 @@ export async function mainMenuKeyboard(db: D1Database, chatId: number) {
 export function backKeyboard() {
     return new Keyboard()
         .text(BUTTONS.BACK)
-        .resized()
-        .persistent();
+        .resized();
 }
 
 export function orderBackKeyboard() {
