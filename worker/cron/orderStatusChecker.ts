@@ -121,6 +121,7 @@ export async function checkOrderStatuses(
             try {
                 const statuses = await api.getMultiOrderStatus(orderIds);
                 const simpleUpdates: D1PreparedStatement[] = [];
+                const notifyQueue: { order: any; status: OrderStatus }[] = [];
 
                 for (const { order } of chunk) {
                     const providerOrderId = order.api_provider_order_id!;
@@ -157,6 +158,7 @@ export async function checkOrderStatuses(
                                     currency: order.currency || 'toman',
                                 })
                             );
+                            notifyQueue.push({ order, status: newStatus });
                             updated++;
                         }
                     } else {
@@ -167,12 +169,19 @@ export async function checkOrderStatuses(
                                 currency: order.currency || 'toman',
                             })
                         );
+                        if (shouldNotifyCustomer(newStatus)) {
+                            notifyQueue.push({ order, status: newStatus });
+                        }
                         updated++;
                     }
                 }
 
                 for (let i = 0; i < simpleUpdates.length; i += BATCH_WRITE_CHUNK) {
                     await db.batch(simpleUpdates.slice(i, i + BATCH_WRITE_CHUNK));
+                }
+
+                for (const item of notifyQueue) {
+                    await notifyCustomerOrderStatus(db, item.order, item.status);
                 }
             } catch (error: any) {
                 errors.push(`Provider ${providerId}: ${error.message}`);
@@ -272,34 +281,49 @@ export async function applyOrderRefund(
         return 0;
     }
 
-    await sendRefundNotification(db, order, newStatus, refundAmount);
+    await notifyCustomerOrderStatus(db, order, newStatus, refundAmount);
     return refundAmount;
 }
 
-async function sendRefundNotification(
+function shouldNotifyCustomer(status: OrderStatus): boolean {
+    return status === 'Completed' || status === 'Partial' || status === 'Canceled';
+}
+
+/** Notify Telegram user about terminal / completed order status changes. */
+export async function notifyCustomerOrderStatus(
     db: D1Database,
     order: any,
     status: OrderStatus,
-    refundAmount: number
+    refundAmount?: number
 ): Promise<void> {
     try {
         Setting.use(db);
         const token = await Setting.get('telegram_token');
-        if (!token) return;
+        if (!token || !order?.user_chat_id) return;
 
         const api = new Api(token);
-
         let message = '';
-        if (status === 'Canceled') {
-            message = `❌ سفارش شما (#${order.id}) لغو شد.\n\n💰 موجودی شما به مبلغ ${refundAmount.toLocaleString()} تومان برگردانده شد.`;
+
+        if (status === 'Completed') {
+            message =
+                `✅ سفارش شما (#${order.id}) تکمیل شد.` +
+                (order.link ? `\n\n🔗 ${order.link}` : '');
+        } else if (status === 'Canceled') {
+            message = `❌ سفارش شما (#${order.id}) لغو شد.`;
+            if (refundAmount && refundAmount > 0) {
+                message += `\n\n💰 موجودی شما به مبلغ ${refundAmount.toLocaleString()} تومان برگردانده شد.`;
+            }
         } else if (status === 'Partial') {
-            message = `⚠️ سفارش شما (#${order.id}) به صورت جزئی انجام شد.\n\n💰 موجودی شما به مبلغ ${refundAmount.toLocaleString()} تومان برگردانده شد.`;
+            message = `⚠️ سفارش شما (#${order.id}) به صورت جزئی انجام شد.`;
+            if (refundAmount && refundAmount > 0) {
+                message += `\n\n💰 موجودی شما به مبلغ ${refundAmount.toLocaleString()} تومان برگردانده شد.`;
+            }
         }
 
         if (message) {
             await api.sendMessage(order.user_chat_id, message);
         }
     } catch (error: any) {
-        console.error('Failed to send refund notification:', error.message);
+        console.error('Failed to send order status notification:', error.message);
     }
 }

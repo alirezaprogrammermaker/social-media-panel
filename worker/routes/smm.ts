@@ -4,7 +4,7 @@ import { Category } from '../db/Category';
 import { Service } from '../db/Service';
 import { Order } from '../db/Order';
 import { SmmApiProvider } from '../api/SmmApiProvider';
-import { applyOrderRefund, checkOrderStatuses } from '../cron/orderStatusChecker';
+import { applyOrderRefund, checkOrderStatuses, notifyCustomerOrderStatus } from '../cron/orderStatusChecker';
 import { manualSyncServicesFromProviders, syncProviderBalance } from '../cron/serviceChecker';
 import { requireAuth, requireAdmin } from '../middleware';
 import { TelegramUser } from '../db/TelegramUser';
@@ -622,6 +622,11 @@ smm.put('/orders/:id/status', async (c) => {
         const order = await Order.find(String(id)) as any;
         if (!order) return c.json({ error: 'سفارش یافت نشد' }, 404);
 
+        const prevStatus = order.status;
+        if (status === prevStatus) {
+            return c.json({ ok: true, unchanged: true });
+        }
+
         if (status === 'Canceled' || status === 'Partial') {
             const refunded = await applyOrderRefund(c.env.DB, order, status as any);
             if (refunded > 0) {
@@ -630,6 +635,9 @@ smm.put('/orders/:id/status', async (c) => {
         }
 
         await Order.updateStatus(id, status as any);
+        if (status === 'Completed' || status === 'Partial' || status === 'Canceled') {
+            await notifyCustomerOrderStatus(c.env.DB, order, status as any);
+        }
         return c.json({ ok: true });
     } catch (e: any) {
         return c.json({ error: e?.message || 'خطا در بروزرسانی وضعیت' }, 500);
