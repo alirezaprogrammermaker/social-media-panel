@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { Bot, Api, webhookCallback } from 'grammy';
 import { TelegramUser } from '../db/TelegramUser';
 import { Setting } from '../db/Setting';
-import { isSpamming, paymentState, aiChatState, orderState, myOrdersState } from './state';
+import { isSpamming, paymentState, aiChatState, orderState } from './state';
 import { BUTTONS, MESSAGES } from './constants';
 import { handleStart, checkChannelMembership } from './handlers/start';
 import { handleHelp, handleHelpCallback } from './handlers/help';
@@ -37,8 +37,8 @@ import {
     handleMyOrdersPagination,
     handleMyOrderSelect,
     handleMyOrdersBack,
-    handleMyOrdersExit,
     looksLikeOrderListButton,
+    getMyOrdersStep,
 } from './handlers/myOrders';
 import { mainMenuKeyboard } from './keyboards';
 import type { Bindings } from '../types';
@@ -109,7 +109,8 @@ telegram.post('/webhook', async (c) => {
                         return;
                     }
 
-                    if (myOrdersState.has(userId)) {
+                    const myOrdersStep = await getMyOrdersStep(c.env.DB, userId);
+                    if (myOrdersStep) {
                         await handleMyOrdersBack(ctx, c.env.DB, userId);
                         return;
                     }
@@ -182,16 +183,9 @@ telegram.post('/webhook', async (c) => {
                 if (text === '◀️ قبلی' || text === 'بعدی ▶️') {
                     const direction = text === 'بعدی ▶️' ? 'next' as const : 'prev' as const;
                     const currentOrderState = orderState.get(userId);
-                    const currentMyOrdersState = myOrdersState.get(userId);
+                    const myOrdersStep = await getMyOrdersStep(c.env.DB, userId);
 
-                    // Prefer my-orders paging when that flow is active OR no new-order category/service step
-                    if (currentMyOrdersState?.step === 'list' || (!currentOrderState && myOrdersState.has(userId))) {
-                        await handleMyOrdersPagination(ctx, c.env.DB, userId, direction);
-                        return;
-                    }
-
-                    // If memory state was dropped but user still has order-list keyboard, allow paging
-                    if (!currentOrderState && !aiChatState.has(userId) && !paymentState.has(userId)) {
+                    if (myOrdersStep === 'list') {
                         await handleMyOrdersPagination(ctx, c.env.DB, userId, direction);
                         return;
                     }

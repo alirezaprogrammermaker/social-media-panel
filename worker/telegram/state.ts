@@ -49,9 +49,6 @@ export const paymentState = new Map<number, {
 // AI chat state
 export const aiChatState = new Map<number, { step: 'waiting_question' }>();
 
-// My Orders state
-export const myOrdersState = new Map<number, { step: 'list' | 'detail'; page: number; selectedOrderId?: number }>();
-
 // Order state
 export const orderState = new Map<number, {
     step: 'select_category' | 'select_service' | 'enter_link' | 'enter_quantity';

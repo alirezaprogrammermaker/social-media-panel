@@ -1,10 +1,22 @@
 import { Order } from '../../db/Order';
-import { myOrdersState } from '../state';
 import { orderListKeyboard, orderDetailKeyboard, ITEMS_PER_PAGE, mainMenuKeyboard } from '../keyboards';
 import { MESSAGES } from '../constants';
+import {
+    BOT_FLOWS,
+    clearFlowSession,
+    getFlowSession,
+    setFlowSession,
+} from '../flowSession';
 
 /** Soft cap so one user cannot force huge Telegram DB scans forever. */
 const MAX_USER_ORDERS_HISTORY = 200;
+
+export type MyOrdersStep = 'list' | 'detail';
+
+export interface MyOrdersData {
+    page: number;
+    selectedOrderId?: number;
+}
 
 const statusLabels: Record<string, string> = {
     'Pending': 'در انتظار',
@@ -60,37 +72,56 @@ async function loadOrdersPage(db: D1Database, userId: number, page: number) {
     return { orders, total, totalPages, page: safePage };
 }
 
+async function getMyOrdersSession(db: D1Database, chatId: number) {
+    return getFlowSession<MyOrdersData>(db, chatId, BOT_FLOWS.MY_ORDERS);
+}
+
+async function saveMyOrdersSession(
+    db: D1Database,
+    chatId: number,
+    step: MyOrdersStep,
+    data: MyOrdersData
+) {
+    return setFlowSession(db, chatId, BOT_FLOWS.MY_ORDERS, step, data);
+}
+
 export async function handleMyOrders(ctx: any, db: D1Database, userId: number) {
     const { orders, total, totalPages, page } = await loadOrdersPage(db, userId, 0);
 
     if (total === 0) {
-        myOrdersState.delete(userId);
+        await clearFlowSession(db, userId, BOT_FLOWS.MY_ORDERS);
         await ctx.reply(MESSAGES.MY_ORDERS_EMPTY, { reply_markup: await mainMenuKeyboard(db, userId) });
         return;
     }
 
-    myOrdersState.set(userId, { step: 'list', page });
+    await saveMyOrdersSession(db, userId, 'list', { page });
 
     await ctx.reply(MESSAGES.MY_ORDERS_PAGE(1, totalPages), {
         reply_markup: orderListKeyboard(orders as any, page, total),
     });
 }
 
-export async function handleMyOrdersPagination(ctx: any, db: D1Database, userId: number, direction: 'next' | 'prev') {
-    const state = myOrdersState.get(userId);
-    // Workers may lose in-memory state; still allow paging from page 0
-    let targetPage = state?.page ?? 0;
+export async function handleMyOrdersPagination(
+    ctx: any,
+    db: D1Database,
+    userId: number,
+    direction: 'next' | 'prev'
+) {
+    const session = await getMyOrdersSession(db, userId);
+    if (session && session.step !== 'list') return false;
+
+    let targetPage = session?.data?.page ?? 0;
     if (direction === 'next') targetPage += 1;
     else if (direction === 'prev') targetPage -= 1;
 
     const { orders, total, totalPages, page: newPage } = await loadOrdersPage(db, userId, targetPage);
     if (total === 0) {
-        myOrdersState.delete(userId);
+        await clearFlowSession(db, userId, BOT_FLOWS.MY_ORDERS);
         await ctx.reply(MESSAGES.MY_ORDERS_EMPTY, { reply_markup: await mainMenuKeyboard(db, userId) });
         return true;
     }
 
-    myOrdersState.set(userId, { step: 'list', page: newPage });
+    await saveMyOrdersSession(db, userId, 'list', { page: newPage });
     await ctx.reply(MESSAGES.MY_ORDERS_PAGE(newPage + 1, totalPages), {
         reply_markup: orderListKeyboard(orders as any, newPage, total),
     });
@@ -98,8 +129,14 @@ export async function handleMyOrdersPagination(ctx: any, db: D1Database, userId:
 }
 
 export async function handleMyOrderSelect(ctx: any, db: D1Database, userId: number, text: string) {
-    // Do not require myOrdersState — Cloudflare Workers isolates often drop module Maps
     if (!looksLikeOrderListButton(text)) return false;
+
+    let session = await getMyOrdersSession(db, userId);
+    if (!session) {
+        // Keyboard may still be visible after isolate recycle; re-open flow from D1
+        session = await saveMyOrdersSession(db, userId, 'list', { page: 0 });
+        if (!session) return false;
+    }
 
     const orderIdStr = text.match(/[#＃](\d+)/);
     if (!orderIdStr) return false;
@@ -115,8 +152,8 @@ export async function handleMyOrderSelect(ctx: any, db: D1Database, userId: numb
         return true;
     }
 
-    const page = myOrdersState.get(userId)?.page ?? 0;
-    myOrdersState.set(userId, { step: 'detail', page, selectedOrderId: orderId });
+    const page = session.data?.page ?? 0;
+    await saveMyOrdersSession(db, userId, 'detail', { page, selectedOrderId: orderId });
 
     const statusPersian = statusLabels[order.status] || order.status;
     const date = order.created_at ? formatPersianDate(order.created_at) : '-';
@@ -137,26 +174,25 @@ export async function handleMyOrderSelect(ctx: any, db: D1Database, userId: numb
 }
 
 export async function handleMyOrdersBack(ctx: any, db: D1Database, userId: number) {
-    const state = myOrdersState.get(userId);
+    const session = await getMyOrdersSession(db, userId);
 
-    // If memory state was lost but user presses back from detail keyboard, show list again
-    if (!state || state.step === 'detail') {
-        const page = state?.page ?? 0;
+    if (!session || session.step === 'detail') {
+        const page = session?.data?.page ?? 0;
         const { orders, total, totalPages, page: safePage } = await loadOrdersPage(db, userId, page);
         if (total === 0) {
-            myOrdersState.delete(userId);
+            await clearFlowSession(db, userId, BOT_FLOWS.MY_ORDERS);
             await ctx.reply(MESSAGES.MY_ORDERS_EMPTY, { reply_markup: await mainMenuKeyboard(db, userId) });
             return true;
         }
-        myOrdersState.set(userId, { step: 'list', page: safePage });
+        await saveMyOrdersSession(db, userId, 'list', { page: safePage });
         await ctx.reply(MESSAGES.MY_ORDERS_PAGE(safePage + 1, totalPages), {
             reply_markup: orderListKeyboard(orders as any, safePage, total),
         });
         return true;
     }
 
-    if (state.step === 'list') {
-        myOrdersState.delete(userId);
+    if (session.step === 'list') {
+        await clearFlowSession(db, userId, BOT_FLOWS.MY_ORDERS);
         await ctx.reply(MESSAGES.AI_EXIT, { reply_markup: await mainMenuKeyboard(db, userId) });
         return true;
     }
@@ -164,6 +200,18 @@ export async function handleMyOrdersBack(ctx: any, db: D1Database, userId: numbe
     return false;
 }
 
-export async function handleMyOrdersExit(userId: number) {
-    myOrdersState.delete(userId);
+export async function handleMyOrdersExit(db: D1Database, userId: number) {
+    await clearFlowSession(db, userId, BOT_FLOWS.MY_ORDERS);
+}
+
+/** True when user has an active my_orders flow in D1. */
+export async function hasMyOrdersFlow(db: D1Database, chatId: number): Promise<boolean> {
+    const session = await getMyOrdersSession(db, chatId);
+    return Boolean(session);
+}
+
+export async function getMyOrdersStep(db: D1Database, chatId: number): Promise<MyOrdersStep | null> {
+    const session = await getMyOrdersSession(db, chatId);
+    if (!session) return null;
+    return session.step as MyOrdersStep;
 }
