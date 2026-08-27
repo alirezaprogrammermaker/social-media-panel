@@ -205,7 +205,7 @@ function SettingsProvider({ children }: { children: React.ReactNode }) {
             const data = await res.json();
             if (!res.ok) { message.error(data.error); return; }
             setRegistrationDisabled(data.registrationDisabled);
-            message.success(data.registrationDisabled ? 'ثبت نام غیرفعال شد' : 'ثبت نام فعال شد');
+            message.success(data.registrationDisabled ? 'ثبت‌نام داشبورد غیرفعال شد' : 'ثبت‌نام داشبورد فعال شد');
         } finally { setLoading(null); }
     };
 
@@ -379,9 +379,14 @@ function GeneralSettings() {
                 </Card>
             </Col>
             <Col xs={24} lg={12}>
-                <Card title="تنظیمات ثبت نام">
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                        <span>غیرفعال کردن صفحه ثبت نام</span>
+                <Card title="ثبت‌نام داشبورد">
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                        <div>
+                            <div>غیرفعال کردن صفحه ثبت‌نام داشبورد</div>
+                            <Text type="secondary" style={{ fontSize: 12 }}>
+                                فقط روی /signup پنل وب اثر دارد؛ عضویت ربات تلگرام جداست و قطع نمی‌شود.
+                            </Text>
+                        </div>
                         <Switch checked={s.registrationDisabled} loading={s.loading === 'registration'} onChange={s.toggleRegistration}
                             checkedChildren="غیرفعال" unCheckedChildren="فعال" />
                     </div>

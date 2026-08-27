@@ -1,7 +1,6 @@
 import { InlineKeyboard } from 'grammy';
 import { TelegramUser } from '../../db/TelegramUser';
 import { BotChannel } from '../../db/BotChannel';
-import { Setting } from '../../db/Setting';
 import { helpKeyboard } from '../keyboards';
 import { MESSAGES } from '../constants';
 import { checkMembership } from '../state';
@@ -18,15 +17,8 @@ export async function handleStart(
 
     const existing = await TelegramUser.findBy<{ id: number }>('chat_id', chat_id);
 
-    // Check if registration is disabled
+    // Dashboard "registration_disabled" must NOT block Telegram users.
     if (!existing) {
-        Setting.use(db);
-        const registrationDisabled = await Setting.get('registration_disabled');
-        if (registrationDisabled === 'true') {
-            await ctx.reply('⛔ ثبت‌نام در حال حاضر غیرفعال است.');
-            return true;
-        }
-
         await TelegramUser.create({
             chat_id,
             username: username ?? null,
