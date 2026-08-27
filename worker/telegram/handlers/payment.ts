@@ -252,7 +252,7 @@ export async function handleCryptoNetworkSelect(ctx: any, db: D1Database, userId
 }
 
 // Step 3: Handle amount input
-export async function handlePaymentAmount(ctx: any, userId: number, text: string, db?: D1Database, env?: Bindings) {
+export async function handlePaymentAmount(ctx: any, userId: number, text: string, db: D1Database, env?: Bindings) {
     const state = await getPaymentFlow(db, userId);
     if (!state || state.step !== 'amount') return false;
 
@@ -273,7 +273,7 @@ export async function handlePaymentAmount(ctx: any, userId: number, text: string
     }
 
     if (state.isCrypto) {
-        if (!db || !env) {
+        if (!env) {
             await ctx.reply(MESSAGES.CRYPTO_GATEWAY_NOT_CONFIGURED, { reply_markup: helpKeyboard(false) });
             await clearPaymentFlow(db, userId);
             return true;

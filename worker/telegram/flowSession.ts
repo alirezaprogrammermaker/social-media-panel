@@ -39,7 +39,7 @@ function parseData<T extends Record<string, any>>(raw: string | null | undefined
 
 function splitState<T extends Record<string, any>>(state: FlowState<T>): { step: string; data: T } {
     const { step, ...rest } = state;
-    return { step, data: rest as T };
+    return { step, data: rest as unknown as T };
 }
 
 /** Active session for a chat + flow (durable across Worker isolates via D1). */
