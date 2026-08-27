@@ -26,8 +26,13 @@ dashboard.use('*', requireAdmin);
 
 dashboard.get('/telegram-users', async (c) => {
     TelegramUser.use(c.env.DB);
-    const users = await TelegramUser.all();
-    return c.json(users);
+    const { parsePagination } = await import('../utils/pagination');
+    const { page, pageSize } = parsePagination({
+        page: c.req.query('page'),
+        pageSize: c.req.query('pageSize'),
+    });
+    const result = await TelegramUser.listPaginated(page, pageSize);
+    return c.json(result);
 });
 
 dashboard.delete('/telegram-users/:chatId', async (c) => {
@@ -846,17 +851,15 @@ dashboard.delete('/payment-methods/:id', async (c) => {
 
 dashboard.get('/payments', async (c) => {
     Payment.use(c.env.DB);
+    const { parsePagination } = await import('../utils/pagination');
+    const { page, pageSize } = parsePagination({
+        page: c.req.query('page'),
+        pageSize: c.req.query('pageSize'),
+    });
     const status = c.req.query('status');
     const type = c.req.query('type');
-    let payments = status
-        ? await Payment.findByStatus(status)
-        : await Payment.findAllOrdered();
-    if (type === 'crypto') {
-        payments = payments.filter((p: any) => p.payment_type === 'crypto');
-    } else if (type === 'card') {
-        payments = payments.filter((p: any) => (p.payment_type || 'card') === 'card');
-    }
-    return c.json(payments);
+    const result = await Payment.listPaginated(page, pageSize, { status, type });
+    return c.json(result);
 });
 
 dashboard.get('/payments/stats', async (c) => {

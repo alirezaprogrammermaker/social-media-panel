@@ -12,10 +12,13 @@ interface UseCrudPageOptions {
     updateMsg?: string;
     deleteMsg?: string;
     toggleMsg?: string;
+    /** When true, expects `{ data, total, page, pageSize }` from the list endpoint. */
+    paginated?: boolean;
 }
 
 export function useCrudPage<T extends { id: number }>(options: UseCrudPageOptions) {
     const [items, setItems] = useState<T[]>([]);
+    const [total, setTotal] = useState(0);
     const [loading, setLoading] = useState(false);
     const [modalOpen, setModalOpen] = useState(false);
     const [editingItem, setEditingItem] = useState<T | null>(null);
@@ -30,12 +33,19 @@ export function useCrudPage<T extends { id: number }>(options: UseCrudPageOption
                 setLoading(false);
                 return;
             }
-            setItems(await res.json());
+            const json = await res.json();
+            if (options.paginated && json && Array.isArray(json.data)) {
+                setItems(json.data);
+                setTotal(Number(json.total) || 0);
+            } else {
+                setItems(json);
+                setTotal(Array.isArray(json) ? json.length : 0);
+            }
         } catch {
             message.error('خطا در دریافت اطلاعات');
         }
         setLoading(false);
-    }, [options.fetchUrl]);
+    }, [options.fetchUrl, options.paginated]);
 
     useEffect(() => {
         fetchData();
@@ -43,7 +53,7 @@ export function useCrudPage<T extends { id: number }>(options: UseCrudPageOption
 
     const handleCreate = async (values: any) => {
         try {
-            const res = await fetch(options.createUrl || options.fetchUrl, {
+            const res = await fetch(options.createUrl || options.fetchUrl.split('?')[0], {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
@@ -70,7 +80,8 @@ export function useCrudPage<T extends { id: number }>(options: UseCrudPageOption
     const handleEdit = async (values: any) => {
         if (!editingItem) return;
         try {
-            const res = await fetch(options.updateUrl?.(editingItem.id) || `${options.fetchUrl}/${editingItem.id}`, {
+            const base = options.fetchUrl.split('?')[0];
+            const res = await fetch(options.updateUrl?.(editingItem.id) || `${base}/${editingItem.id}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
@@ -97,7 +108,8 @@ export function useCrudPage<T extends { id: number }>(options: UseCrudPageOption
 
     const handleDelete = async (id: number) => {
         try {
-            const res = await fetch(options.deleteUrl?.(id) || `${options.fetchUrl}/${id}`, { method: 'DELETE', credentials: 'include' });
+            const base = options.fetchUrl.split('?')[0];
+            const res = await fetch(options.deleteUrl?.(id) || `${base}/${id}`, { method: 'DELETE', credentials: 'include' });
             if (!res.ok) {
                 message.error(`خطا ${res.status}`);
                 return;
@@ -116,7 +128,8 @@ export function useCrudPage<T extends { id: number }>(options: UseCrudPageOption
 
     const handleToggle = async (id: number, isActive: boolean) => {
         try {
-            const res = await fetch(options.toggleUrl?.(id) || `${options.fetchUrl}/${id}/toggle`, {
+            const base = options.fetchUrl.split('?')[0];
+            const res = await fetch(options.toggleUrl?.(id) || `${base}/${id}/toggle`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
@@ -157,6 +170,7 @@ export function useCrudPage<T extends { id: number }>(options: UseCrudPageOption
     return {
         items,
         setItems,
+        total,
         loading,
         modalOpen,
         editingItem,

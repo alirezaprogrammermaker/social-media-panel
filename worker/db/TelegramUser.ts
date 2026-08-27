@@ -1,5 +1,7 @@
 import { Model } from './Model';
 import { dateTehran, nowTehran } from '../utils/date';
+import type { PaginatedResult } from '../utils/pagination';
+import { paginatedResult } from '../utils/pagination';
 
 export interface TelegramUserRow {
     id: number;
@@ -18,6 +20,21 @@ export interface TelegramUserRow {
 
 export class TelegramUser extends Model<TelegramUserRow> {
     protected static table = 'telegram_users';
+
+    static async listPaginated(
+        this: any,
+        page: number,
+        pageSize: number
+    ): Promise<PaginatedResult<TelegramUserRow>> {
+        const offset = (page - 1) * pageSize;
+        const total = await this.count();
+        const data = await this.raw(
+            `SELECT * FROM ${this.table} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+            pageSize,
+            offset
+        );
+        return paginatedResult(data, total, page, pageSize);
+    }
 
     static async findByChatId(this: any, chatId: number): Promise<TelegramUserRow | null> {
         return this.findBy('chat_id', chatId);

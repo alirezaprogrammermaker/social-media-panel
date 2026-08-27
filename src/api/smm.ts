@@ -64,8 +64,14 @@ class SmmApi extends BaseApi {
     }
 
     // Services
-    async getServices() {
-        return this.get<any[]>('/services');
+    async getServices(page = 1, pageSize = 20, q?: string) {
+        const params = new URLSearchParams();
+        params.set('page', String(page));
+        params.set('pageSize', String(pageSize));
+        if (q?.trim()) params.set('q', q.trim());
+        return this.get<{ data: any[]; total: number; page: number; pageSize: number }>(
+            `/services?${params.toString()}`
+        );
     }
 
     async createService(data: any) {
@@ -97,9 +103,14 @@ class SmmApi extends BaseApi {
     }
 
     // Orders
-    async getOrders(status?: string) {
-        const url = status ? `/orders?status=${status}` : '/orders';
-        return this.get<any[]>(url);
+    async getOrders(status?: string, page = 1, pageSize = 20) {
+        const params = new URLSearchParams();
+        if (status) params.set('status', status);
+        params.set('page', String(page));
+        params.set('pageSize', String(pageSize));
+        return this.get<{ data: any[]; total: number; page: number; pageSize: number }>(
+            `/orders?${params.toString()}`
+        );
     }
 
     async createOrder(data: any) {
@@ -130,8 +141,10 @@ class SmmApi extends BaseApi {
         return this.get<any>('/orders/stats/revenue');
     }
 
-    async getUserOrders(chatId: number) {
-        return this.get<any[]>(`/orders/user/${chatId}`);
+    async getUserOrders(chatId: number, page = 1, pageSize = 50) {
+        return this.get<{ data: any[]; total: number; page: number; pageSize: number }>(
+            `/orders/user/${chatId}?page=${page}&pageSize=${pageSize}`
+        );
     }
 }
 

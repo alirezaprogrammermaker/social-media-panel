@@ -215,8 +215,14 @@ smm.delete('/categories/:id', async (c) => {
 
 smm.get('/services', async (c) => {
     Service.use(c.env.DB);
-    const services = await Service.getServicesWithCategory();
-    return c.json(services);
+    const { parsePagination } = await import('../utils/pagination');
+    const { page, pageSize } = parsePagination({
+        page: c.req.query('page'),
+        pageSize: c.req.query('pageSize'),
+    });
+    const q = c.req.query('q') || null;
+    const result = await Service.getServicesWithCategoryPaginated(page, pageSize, { q });
+    return c.json(result);
 });
 
 smm.post('/services', async (c) => {
@@ -397,11 +403,14 @@ smm.post('/services/add-from-api', async (c) => {
 
 smm.get('/orders', async (c) => {
     Order.use(c.env.DB);
+    const { parsePagination } = await import('../utils/pagination');
+    const { page, pageSize } = parsePagination({
+        page: c.req.query('page'),
+        pageSize: c.req.query('pageSize'),
+    });
     const status = c.req.query('status');
-    const orders = status
-        ? await Order.findByStatus(status as any)
-        : await Order.getOrdersWithDetails();
-    return c.json(orders);
+    const result = await Order.getOrdersWithDetailsPaginated(page, pageSize, status || null);
+    return c.json(result);
 });
 
 smm.get('/orders/stats', async (c) => {
@@ -666,7 +675,8 @@ smm.put('/orders/:id/cancel', async (c) => {
 
 smm.post('/orders/check-status', async (c) => {
     try {
-        const result = await checkOrderStatuses(c.env.DB);
+        // Manual check: larger batch, still advances keyset cursor for fairness
+        const result = await checkOrderStatuses(c.env.DB, { limit: 500, advanceCursor: true });
         return c.json({ ok: true, ...result });
     } catch (e: any) {
         return c.json({ error: e?.message || 'خطا در بررسی وضعیت سفارشات' }, 500);
@@ -676,9 +686,17 @@ smm.post('/orders/check-status', async (c) => {
 smm.get('/orders/user/:chatId', async (c) => {
     try {
         const chatId = Number(c.req.param('chatId'));
+        const { parsePagination } = await import('../utils/pagination');
+        const { page, pageSize } = parsePagination({
+            page: c.req.query('page'),
+            pageSize: c.req.query('pageSize'),
+        }, { pageSize: 50, maxPageSize: 200 });
         Order.use(c.env.DB);
-        const orders = await Order.getUserOrders(chatId);
-        return c.json(orders);
+        const [data, total] = await Promise.all([
+            Order.getUserOrders(chatId, { limit: pageSize, offset: (page - 1) * pageSize }),
+            Order.countUserOrders(chatId),
+        ]);
+        return c.json({ data, total, page, pageSize });
     } catch (e: any) {
         return c.json({ error: e?.message || 'خطا در دریافت سفارشات' }, 500);
     }

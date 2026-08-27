@@ -1,5 +1,7 @@
 import { Model } from './Model';
 import { dateTehran, nowTehran } from '../utils/date';
+import type { PaginatedResult } from '../utils/pagination';
+import { paginatedResult } from '../utils/pagination';
 
 export type OrderStatus = 'Pending' | 'In progress' | 'Completed' | 'Partial' | 'Processing' | 'Canceled';
 
@@ -22,10 +24,17 @@ export interface OrderData {
     updated_at?: string;
 }
 
+export type OrderWithDetails = OrderData & { service_name?: string; provider_name?: string };
+export type PendingApiOrder = OrderData & { provider_api_url?: string; provider_api_key?: string };
+
+const OPEN_API_STATUS_SQL = `o.status IN ('Pending', 'In progress', 'Processing')
+             AND o.api_provider_order_id IS NOT NULL`;
+
 export class Order extends Model<OrderData> {
     protected static table = 'orders';
 
-    static async getOrdersWithDetails(): Promise<(OrderData & { service_name?: string; provider_name?: string })[]> {
+    /** @deprecated Prefer getOrdersWithDetailsPaginated for dashboard lists. */
+    static async getOrdersWithDetails(): Promise<OrderWithDetails[]> {
         return this.raw(
             `SELECT o.*, s.name as service_name, p.name as provider_name 
              FROM orders o 
@@ -35,18 +44,70 @@ export class Order extends Model<OrderData> {
         );
     }
 
+    static async getOrdersWithDetailsPaginated(
+        page: number,
+        pageSize: number,
+        status?: OrderStatus | string | null
+    ): Promise<PaginatedResult<OrderWithDetails>> {
+        const offset = (page - 1) * pageSize;
+        const hasStatus = Boolean(status);
+
+        const total = hasStatus
+            ? await this.count('status = ?', status)
+            : await this.count();
+
+        const data = hasStatus
+            ? await this.raw<OrderWithDetails>(
+                `SELECT o.*, s.name as service_name, p.name as provider_name
+                 FROM orders o
+                 LEFT JOIN services s ON o.service_id = s.id
+                 LEFT JOIN api_providers p ON o.api_provider_id = p.id
+                 WHERE o.status = ?
+                 ORDER BY o.created_at DESC
+                 LIMIT ? OFFSET ?`,
+                status,
+                pageSize,
+                offset
+            )
+            : await this.raw<OrderWithDetails>(
+                `SELECT o.*, s.name as service_name, p.name as provider_name
+                 FROM orders o
+                 LEFT JOIN services s ON o.service_id = s.id
+                 LEFT JOIN api_providers p ON o.api_provider_id = p.id
+                 ORDER BY o.created_at DESC
+                 LIMIT ? OFFSET ?`,
+                pageSize,
+                offset
+            );
+
+        return paginatedResult(data, total, page, pageSize);
+    }
+
     static async findByStatus(status: OrderStatus): Promise<OrderData[]> {
         return this.where('status', status);
     }
 
-    static async findPendingApiOrders(): Promise<(OrderData & { provider_api_url?: string; provider_api_key?: string })[]> {
+    /**
+     * Keyset page of open API-linked orders for cron/manual status sync.
+     * Pass afterId=0 to start from the beginning.
+     */
+    static async findPendingApiOrders(
+        limit: number = 200,
+        afterId: number = 0
+    ): Promise<PendingApiOrder[]> {
+        const safeLimit = Math.min(Math.max(1, Math.floor(limit) || 200), 500);
+        const cursor = Math.max(0, Math.floor(afterId) || 0);
         return this.raw(
-            `SELECT o.*, p.api_url as provider_api_url, p.api_key as provider_api_key 
-             FROM orders o 
-             INNER JOIN api_providers p ON o.api_provider_id = p.id 
-             WHERE o.status IN ('Pending', 'In progress', 'Processing') 
-             AND o.api_provider_order_id IS NOT NULL 
-             AND p.is_active = 1`
+            `SELECT o.*, p.api_url as provider_api_url, p.api_key as provider_api_key
+             FROM orders o
+             INNER JOIN api_providers p ON o.api_provider_id = p.id
+             WHERE ${OPEN_API_STATUS_SQL}
+               AND p.is_active = 1
+               AND o.id > ?
+             ORDER BY o.id ASC
+             LIMIT ?`,
+            cursor,
+            safeLimit
         );
     }
 
@@ -75,15 +136,90 @@ export class Order extends Model<OrderData> {
         );
     }
 
-    static async getUserOrders(chatId: number): Promise<(OrderData & { service_name?: string })[]> {
+    /** Build a prepared UPDATE for batching simple (non-refund) status changes. */
+    static prepareStatusUpdate(
+        id: number,
+        status: OrderStatus,
+        data?: Partial<OrderData>
+    ): D1PreparedStatement {
+        const now = nowTehran();
+        return this.db
+            .prepare(
+                `UPDATE orders
+                 SET status = ?,
+                     start_count = COALESCE(?, start_count),
+                     remains = COALESCE(?, remains),
+                     currency = COALESCE(?, currency),
+                     updated_at = ?
+                 WHERE id = ?`
+            )
+            .bind(
+                status,
+                data?.start_count ?? null,
+                data?.remains ?? null,
+                data?.currency ?? null,
+                now,
+                id
+            );
+    }
+
+    static async getUserOrders(
+        chatId: number,
+        options?: { limit?: number; offset?: number }
+    ): Promise<(OrderData & { service_name?: string })[]> {
+        const limit = Math.min(Math.max(1, options?.limit ?? 50), 200);
+        const offset = Math.max(0, options?.offset ?? 0);
         return this.raw(
-            `SELECT o.*, s.name as service_name 
-             FROM orders o 
-             LEFT JOIN services s ON o.service_id = s.id 
-             WHERE o.user_chat_id = ? 
-             ORDER BY o.created_at DESC`,
+            `SELECT o.*, s.name as service_name
+             FROM orders o
+             LEFT JOIN services s ON o.service_id = s.id
+             WHERE o.user_chat_id = ?
+             ORDER BY o.created_at DESC
+             LIMIT ? OFFSET ?`,
+            chatId,
+            limit,
+            offset
+        );
+    }
+
+    static async countUserOrders(chatId: number): Promise<number> {
+        return this.count('user_chat_id = ?', chatId);
+    }
+
+    static async findUserOrderById(
+        chatId: number,
+        orderId: number
+    ): Promise<(OrderData & { service_name?: string }) | null> {
+        return this.rawFirst(
+            `SELECT o.*, s.name as service_name
+             FROM orders o
+             LEFT JOIN services s ON o.service_id = s.id
+             WHERE o.user_chat_id = ? AND o.id = ?
+             LIMIT 1`,
+            chatId,
+            orderId
+        );
+    }
+
+    static async getUserOrderStats(chatId: number): Promise<{
+        total: number;
+        pending: number;
+        completed: number;
+    }> {
+        const row = await this.rawFirst<{ total: number; pending: number; completed: number }>(
+            `SELECT
+                COUNT(*) as total,
+                SUM(CASE WHEN status = 'Pending' THEN 1 ELSE 0 END) as pending,
+                SUM(CASE WHEN status = 'Completed' THEN 1 ELSE 0 END) as completed
+             FROM orders
+             WHERE user_chat_id = ?`,
             chatId
         );
+        return {
+            total: row?.total ?? 0,
+            pending: row?.pending ?? 0,
+            completed: row?.completed ?? 0,
+        };
     }
 
     static async getOrderStats(): Promise<{

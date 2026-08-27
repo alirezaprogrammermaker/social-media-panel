@@ -15,17 +15,26 @@ export default function Orders() {
     const [loading, setLoading] = useState(false);
     const [checking, setChecking] = useState(false);
     const [statusFilter, setStatusFilter] = useState<string | undefined>(undefined);
+    const [page, setPage] = useState(1);
+    const [pageSize, setPageSize] = useState(20);
+    const [total, setTotal] = useState(0);
 
     const fetchData = async () => {
         setLoading(true);
         try {
-            const [ordersData, statsData] = await Promise.all([smmApi.getOrders(statusFilter), smmApi.getOrderStats()]);
-            setOrders(ordersData); setStats(statsData);
+            const [ordersData, statsData] = await Promise.all([
+                smmApi.getOrders(statusFilter, page, pageSize),
+                smmApi.getOrderStats(),
+            ]);
+            setOrders(ordersData.data);
+            setTotal(ordersData.total);
+            setStats(statsData);
         } catch { message.error('خطا در دریافت اطلاعات'); }
         setLoading(false);
     };
 
-    useEffect(() => { fetchData(); }, [statusFilter]);
+    useEffect(() => { setPage(1); }, [statusFilter]);
+    useEffect(() => { fetchData(); }, [statusFilter, page, pageSize]);
 
     const handleCheckStatus = async () => {
         setChecking(true);
@@ -101,7 +110,24 @@ export default function Orders() {
                     {Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} active title={{ width: '100%' }} paragraph={{ rows: 1 }} style={{ borderRadius: 8, padding: 16, background: '#fff' }} />)}
                 </div>
             ) : (
-                <Table columns={columns} dataSource={orders} rowKey="id" loading={loading} scroll={{ x: 1200 }} />
+                <Table
+                    columns={columns}
+                    dataSource={orders}
+                    rowKey="id"
+                    loading={loading}
+                    scroll={{ x: 1200 }}
+                    pagination={{
+                        current: page,
+                        pageSize,
+                        total,
+                        showSizeChanger: true,
+                        showTotal: (t) => `${t} مورد`,
+                        onChange: (p, ps) => {
+                            setPage(p);
+                            setPageSize(ps);
+                        },
+                    }}
+                />
             )}
         </div>
     );

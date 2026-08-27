@@ -32,11 +32,11 @@ export async function handleProfile(ctx: any, db: D1Database, userId: number) {
     }
 
     Order.use(db);
-    const orders = await Order.getUserOrders(userId);
+    const orderStats = await Order.getUserOrderStats(userId);
 
-    const totalOrders = orders.length;
-    const pendingOrders = orders.filter((o: any) => o.status === 'Pending').length;
-    const completedOrders = orders.filter((o: any) => o.status === 'Completed').length;
+    const totalOrders = orderStats.total;
+    const pendingOrders = orderStats.pending;
+    const completedOrders = orderStats.completed;
     const balance = user.balance || 0;
 
     const joinDate = user.created_at

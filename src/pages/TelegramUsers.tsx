@@ -12,6 +12,9 @@ export function TelegramUsers() {
     const [users, setUsers] = useState<TelegramUser[]>([]);
     const [stats, setStats] = useState<UserStats | null>(null);
     const [loading, setLoading] = useState(true);
+    const [page, setPage] = useState(1);
+    const [pageSize, setPageSize] = useState(20);
+    const [total, setTotal] = useState(0);
     const [selectedUser, setSelectedUser] = useState<TelegramUser | null>(null);
     const [blockModalOpen, setBlockModalOpen] = useState(false);
     const [blockReason, setBlockReason] = useState('');
@@ -22,12 +25,17 @@ export function TelegramUsers() {
     async function fetchUsers() {
         setLoading(true);
         try {
-            const [usersData, statsData] = await Promise.all([dashboardApi.getTelegramUsers(), dashboardApi.getStats()]);
-            setUsers(usersData); setStats(statsData);
+            const [usersData, statsData] = await Promise.all([
+                dashboardApi.getTelegramUsers(page, pageSize),
+                dashboardApi.getStats(),
+            ]);
+            setUsers(usersData.data);
+            setTotal(usersData.total);
+            setStats(statsData);
         } finally { setLoading(false); }
     }
 
-    useEffect(() => { fetchUsers(); }, []);
+    useEffect(() => { fetchUsers(); }, [page, pageSize]);
 
     async function handleDelete(chatId: number) { await dashboardApi.deleteTelegramUser(chatId); message.success('حذف شد'); setUsers((prev) => prev.filter((u) => u.chat_id !== chatId)); }
 
@@ -105,7 +113,24 @@ export function TelegramUsers() {
                     {Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} active title={{ width: '100%' }} paragraph={{ rows: 1 }} style={{ borderRadius: 8, padding: 16, background: '#fff' }} />)}
                 </div>
             ) : (
-                <Table dataSource={users} columns={columns} rowKey="id" loading={loading} scroll={{ x: 1000 }} pagination={{ pageSize: 20 }} />
+                <Table
+                    dataSource={users}
+                    columns={columns}
+                    rowKey="id"
+                    loading={loading}
+                    scroll={{ x: 1000 }}
+                    pagination={{
+                        current: page,
+                        pageSize,
+                        total,
+                        showSizeChanger: true,
+                        showTotal: (t) => `${t} مورد`,
+                        onChange: (p, ps) => {
+                            setPage(p);
+                            setPageSize(ps);
+                        },
+                    }}
+                />
             )}
             <Modal title="مسدود کردن کاربر" open={blockModalOpen} onOk={handleBlock} onCancel={() => setBlockModalOpen(false)} okText="مسدود کردن" cancelText="لغو">
                 <Input placeholder="دلیل مسدودیت (اختیاری)" value={blockReason} onChange={(e) => setBlockReason(e.target.value)} style={{ marginBottom: 12 }} />

@@ -1,5 +1,7 @@
 import { Model } from './Model';
 import { nowTehran } from '../utils/date';
+import type { PaginatedResult } from '../utils/pagination';
+import { paginatedResult } from '../utils/pagination';
 
 export interface PaymentRow {
     id: number;
@@ -51,6 +53,40 @@ export class Payment extends Model<PaymentRow> {
         return this.raw(
             `SELECT * FROM ${this.table} ORDER BY created_at DESC`
         );
+    }
+
+    static async listPaginated(
+        page: number,
+        pageSize: number,
+        filters?: { status?: string | null; type?: string | null }
+    ): Promise<PaginatedResult<PaymentRow>> {
+        const offset = (page - 1) * pageSize;
+        const where: string[] = [];
+        const params: any[] = [];
+
+        if (filters?.status) {
+            where.push('status = ?');
+            params.push(filters.status);
+        }
+        if (filters?.type === 'crypto') {
+            where.push("payment_type = 'crypto'");
+        } else if (filters?.type === 'card') {
+            where.push("(payment_type IS NULL OR payment_type = '' OR payment_type = 'card')");
+        }
+
+        const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+        const countRow = await this.rawFirst<{ count: number }>(
+            `SELECT COUNT(*) as count FROM ${this.table} ${whereSql}`,
+            ...params
+        );
+        const total = countRow?.count ?? 0;
+        const data = await this.raw<PaymentRow>(
+            `SELECT * FROM ${this.table} ${whereSql} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+            ...params,
+            pageSize,
+            offset
+        );
+        return paginatedResult(data, total, page, pageSize);
     }
 
     static async findLatestByUserChatId(this: any, chatId: number): Promise<PaymentRow | null> {

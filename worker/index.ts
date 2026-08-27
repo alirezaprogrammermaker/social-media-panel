@@ -42,8 +42,11 @@ export default {
 
             if (minute % 5 === 0) {
                 console.log('Checking order statuses...');
-                const result = await checkOrderStatuses(env.DB);
-                console.log(`Order check: ${result.checked} checked, ${result.updated} updated, ${result.refunded} refunded`);
+                const result = await checkOrderStatuses(env.DB, { limit: 200, advanceCursor: true });
+                console.log(
+                    `Order check: ${result.checked} checked, ${result.updated} updated, ${result.refunded} refunded` +
+                    ` (batch=${result.batchSize}, cursor ${result.cursorBefore}->${result.cursorAfter})`
+                );
 
                 console.log('Polling pending crypto payments...');
                 const cryptoResult = await pollPendingCryptoPayments(env);

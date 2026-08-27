@@ -3,6 +3,9 @@ import { myOrdersState } from '../state';
 import { orderListKeyboard, orderDetailKeyboard, ITEMS_PER_PAGE, mainMenuKeyboard } from '../keyboards';
 import { MESSAGES } from '../constants';
 
+/** Soft cap so one user cannot force huge Telegram DB scans forever. */
+const MAX_USER_ORDERS_HISTORY = 200;
+
 const statusLabels: Record<string, string> = {
     'Pending': 'در انتظار',
     'In progress': 'در حال انجام',
@@ -31,20 +34,31 @@ function formatPersianDate(dateStr: string): string {
     return toPersianDigits(formatted);
 }
 
-export async function handleMyOrders(ctx: any, db: D1Database, userId: number) {
+async function loadOrdersPage(db: D1Database, userId: number, page: number) {
     Order.use(db);
-    const orders = await Order.getUserOrders(userId);
+    const totalAll = await Order.countUserOrders(userId);
+    const total = Math.min(totalAll, MAX_USER_ORDERS_HISTORY);
+    const totalPages = Math.max(1, Math.ceil(total / ITEMS_PER_PAGE));
+    const safePage = Math.min(Math.max(0, page), totalPages - 1);
+    const orders = await Order.getUserOrders(userId, {
+        limit: ITEMS_PER_PAGE,
+        offset: safePage * ITEMS_PER_PAGE,
+    });
+    return { orders, total, totalPages, page: safePage };
+}
 
-    if (orders.length === 0) {
+export async function handleMyOrders(ctx: any, db: D1Database, userId: number) {
+    const { orders, total, totalPages, page } = await loadOrdersPage(db, userId, 0);
+
+    if (total === 0) {
         await ctx.reply(MESSAGES.MY_ORDERS_EMPTY, { reply_markup: await mainMenuKeyboard(db, userId) });
         return;
     }
 
-    myOrdersState.set(userId, { step: 'list', page: 0 });
+    myOrdersState.set(userId, { step: 'list', page });
 
-    const totalPages = Math.ceil(orders.length / ITEMS_PER_PAGE);
     await ctx.reply(MESSAGES.MY_ORDERS_PAGE(1, totalPages), {
-        reply_markup: orderListKeyboard(orders as any, 0),
+        reply_markup: orderListKeyboard(orders as any, page, total),
     });
 }
 
@@ -52,20 +66,20 @@ export async function handleMyOrdersPagination(ctx: any, db: D1Database, userId:
     const state = myOrdersState.get(userId);
     if (!state || state.step !== 'list') return false;
 
-    Order.use(db);
-    const orders = await Order.getUserOrders(userId);
-    const totalPages = Math.ceil(orders.length / ITEMS_PER_PAGE);
+    let targetPage = state.page;
+    if (direction === 'next') targetPage = state.page + 1;
+    else if (direction === 'prev') targetPage = state.page - 1;
 
-    let newPage = state.page;
-    if (direction === 'next' && state.page < totalPages - 1) {
-        newPage = state.page + 1;
-    } else if (direction === 'prev' && state.page > 0) {
-        newPage = state.page - 1;
+    const { orders, total, totalPages, page: newPage } = await loadOrdersPage(db, userId, targetPage);
+    if (total === 0) {
+        myOrdersState.delete(userId);
+        await ctx.reply(MESSAGES.MY_ORDERS_EMPTY, { reply_markup: await mainMenuKeyboard(db, userId) });
+        return true;
     }
 
     myOrdersState.set(userId, { ...state, page: newPage });
     await ctx.reply(MESSAGES.MY_ORDERS_PAGE(newPage + 1, totalPages), {
-        reply_markup: orderListKeyboard(orders as any, newPage),
+        reply_markup: orderListKeyboard(orders as any, newPage, total),
     });
     return true;
 }
@@ -82,8 +96,7 @@ export async function handleMyOrderSelect(ctx: any, db: D1Database, userId: numb
     if (isNaN(orderId)) return false;
 
     Order.use(db);
-    const orders = await Order.getUserOrders(userId);
-    const order = orders.find((o: any) => o.id === orderId) as any;
+    const order = await Order.findUserOrderById(userId, orderId) as any;
 
     if (!order) {
         await ctx.reply(MESSAGES.ORDER_NOT_FOUND);
@@ -115,20 +128,15 @@ export async function handleMyOrdersBack(ctx: any, db: D1Database, userId: numbe
     if (!state) return false;
 
     if (state.step === 'detail') {
-        // Go back to list
-        Order.use(db);
-        const orders = await Order.getUserOrders(userId);
-        const totalPages = Math.ceil(orders.length / ITEMS_PER_PAGE);
-
-        myOrdersState.set(userId, { step: 'list', page: state.page });
-        await ctx.reply(MESSAGES.MY_ORDERS_PAGE(state.page + 1, totalPages), {
-            reply_markup: orderListKeyboard(orders as any, state.page),
+        const { orders, total, totalPages, page } = await loadOrdersPage(db, userId, state.page);
+        myOrdersState.set(userId, { step: 'list', page });
+        await ctx.reply(MESSAGES.MY_ORDERS_PAGE(page + 1, totalPages), {
+            reply_markup: orderListKeyboard(orders as any, page, total),
         });
         return true;
     }
 
     if (state.step === 'list') {
-        // Exit to main menu
         myOrdersState.delete(userId);
         await ctx.reply(MESSAGES.AI_EXIT, { reply_markup: await mainMenuKeyboard(db, userId) });
         return true;

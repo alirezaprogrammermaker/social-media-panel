@@ -13,14 +13,34 @@ interface CheckResult {
     updated: number;
     refunded: number;
     errors: string[];
+    batchSize: number;
+    cursorBefore: number;
+    cursorAfter: number;
+}
+
+export interface CheckOrderStatusesOptions {
+    /** Max open orders to fetch this run (capped at 500). */
+    limit?: number;
+    /** Persist keyset cursor so subsequent runs continue fairly. Default true. */
+    advanceCursor?: boolean;
 }
 
 const TERMINAL_REFUND_STATUSES: OrderStatus[] = ['Canceled', 'Partial'];
+const CURSOR_SETTING_KEY = 'order_status_check_cursor';
+const DEFAULT_CRON_LIMIT = 200;
+const BATCH_WRITE_CHUNK = 40;
 
-export async function checkOrderStatuses(db: D1Database): Promise<CheckResult> {
+export async function checkOrderStatuses(
+    db: D1Database,
+    options: CheckOrderStatusesOptions = {}
+): Promise<CheckResult> {
     Order.use(db);
     ApiProvider.use(db);
     TelegramUser.use(db);
+    Setting.use(db);
+
+    const limit = Math.min(Math.max(1, options.limit ?? DEFAULT_CRON_LIMIT), 500);
+    const advanceCursor = options.advanceCursor !== false;
 
     const errors: string[] = [];
     let checked = 0;
@@ -53,11 +73,21 @@ export async function checkOrderStatuses(db: D1Database): Promise<CheckResult> {
         }
     }
 
-    const pendingOrders = await Order.findPendingApiOrders();
+    const cursorRaw = await Setting.get(CURSOR_SETTING_KEY);
+    const cursorBefore = Math.max(0, parseInt(cursorRaw || '0', 10) || 0);
+    const pendingOrders = await Order.findPendingApiOrders(limit, cursorBefore);
 
+    let cursorAfter = cursorBefore;
     if (pendingOrders.length === 0) {
-        return { checked, updated, refunded, errors };
+        if (advanceCursor && cursorBefore > 0) {
+            await Setting.set(CURSOR_SETTING_KEY, '0');
+            cursorAfter = 0;
+        }
+        return { checked, updated, refunded, errors, batchSize: limit, cursorBefore, cursorAfter };
     }
+
+    const lastId = pendingOrders[pendingOrders.length - 1].id ?? cursorBefore;
+    cursorAfter = pendingOrders.length < limit ? 0 : lastId;
 
     const ordersByProvider = new Map<number, { order: any; apiUrl: string; apiKey: string }[]>();
 
@@ -90,6 +120,7 @@ export async function checkOrderStatuses(db: D1Database): Promise<CheckResult> {
 
             try {
                 const statuses = await api.getMultiOrderStatus(orderIds);
+                const simpleUpdates: D1PreparedStatement[] = [];
 
                 for (const { order } of chunk) {
                     const providerOrderId = order.api_provider_order_id!;
@@ -109,18 +140,39 @@ export async function checkOrderStatuses(db: D1Database): Promise<CheckResult> {
                         continue;
                     }
 
-                    const refundAmount = await applyOrderRefund(db, order, newStatus, statusData);
-                    if (refundAmount > 0) {
-                        updated++;
-                        refunded++;
+                    const needsRefund = TERMINAL_REFUND_STATUSES.includes(newStatus)
+                        && !TERMINAL_REFUND_STATUSES.includes(order.status as OrderStatus)
+                        && !isRefundMarked(order.error_message);
+
+                    if (needsRefund) {
+                        const refundAmount = await applyOrderRefund(db, order, newStatus, statusData);
+                        if (refundAmount > 0) {
+                            updated++;
+                            refunded++;
+                        } else {
+                            simpleUpdates.push(
+                                Order.prepareStatusUpdate(order.id!, newStatus, {
+                                    start_count: statusData.start_count,
+                                    remains: statusData.remains,
+                                    currency: order.currency || 'toman',
+                                })
+                            );
+                            updated++;
+                        }
                     } else {
-                        await Order.updateStatus(order.id!, newStatus, {
-                            start_count: statusData.start_count,
-                            remains: statusData.remains,
-                            currency: order.currency || 'toman',
-                        });
+                        simpleUpdates.push(
+                            Order.prepareStatusUpdate(order.id!, newStatus, {
+                                start_count: statusData.start_count,
+                                remains: statusData.remains,
+                                currency: order.currency || 'toman',
+                            })
+                        );
                         updated++;
                     }
+                }
+
+                for (let i = 0; i < simpleUpdates.length; i += BATCH_WRITE_CHUNK) {
+                    await db.batch(simpleUpdates.slice(i, i + BATCH_WRITE_CHUNK));
                 }
             } catch (error: any) {
                 errors.push(`Provider ${providerId}: ${error.message}`);
@@ -128,7 +180,12 @@ export async function checkOrderStatuses(db: D1Database): Promise<CheckResult> {
         }
     }
 
-    return { checked, updated, refunded, errors };
+    // Advance keyset only after this page was attempted (fair rotation across backlog)
+    if (advanceCursor) {
+        await Setting.set(CURSOR_SETTING_KEY, String(cursorAfter));
+    }
+
+    return { checked, updated, refunded, errors, batchSize: limit, cursorBefore, cursorAfter };
 }
 
 function isRefundMarked(errorMessage?: string | null): boolean {

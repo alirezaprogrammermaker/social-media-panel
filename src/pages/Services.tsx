@@ -22,6 +22,9 @@ export default function Services() {
     const [providers, setProviders] = useState<ApiProvider[]>([]);
     const [syncing, setSyncing] = useState(false);
     const [searchText, setSearchText] = useState('');
+    const [debouncedSearch, setDebouncedSearch] = useState('');
+    const [page, setPage] = useState(1);
+    const [pageSize, setPageSize] = useState(20);
     const [selectedRowKeys, setSelectedRowKeys] = useState<number[]>([]);
     const [addFromApiModalOpen, setAddFromApiModalOpen] = useState(false);
     const [addFromApiLoading, setAddFromApiLoading] = useState(false);
@@ -31,11 +34,20 @@ export default function Services() {
     const [generatingDesc, setGeneratingDesc] = useState(false);
     const [translationSettings, setTranslationSettings] = useState<{ translatePrompt: string; descPrompt: string }>({ translatePrompt: '', descPrompt: '' });
 
+    useEffect(() => {
+        const t = window.setTimeout(() => setDebouncedSearch(searchText.trim()), 300);
+        return () => window.clearTimeout(t);
+    }, [searchText]);
+
+    useEffect(() => { setPage(1); }, [debouncedSearch]);
+
+    const servicesFetchUrl = `/api/smm/services?page=${page}&pageSize=${pageSize}${debouncedSearch ? `&q=${encodeURIComponent(debouncedSearch)}` : ''}`;
+
     const {
-        items: services, loading, modalOpen, editingItem, form, fetchData,
+        items: services, total, loading, modalOpen, editingItem, form, fetchData,
         handleCreate, handleEdit, handleDelete, handleToggle,
         openCreateModal, openEditModal, closeModal,
-    } = useCrudPage<Service>({ fetchUrl: '/api/smm/services', entityName: 'سرویس' });
+    } = useCrudPage<Service>({ fetchUrl: servicesFetchUrl, entityName: 'سرویس', paginated: true });
 
     useEffect(() => {
         fetchCategories();
@@ -188,8 +200,6 @@ export default function Services() {
         }
     };
 
-    const filteredServices = services.filter((s) => s.name.toLowerCase().includes(searchText.toLowerCase()) || s.category_name?.toLowerCase().includes(searchText.toLowerCase()));
-
     const handleBulkAction = async (action: 'activate' | 'deactivate' | 'delete' | 'change-category', categoryId?: number) => {
         if (selectedRowKeys.length === 0) return message.error('هیچ موردی انتخاب نشده');
 
@@ -306,8 +316,25 @@ export default function Services() {
                     {Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} active title={{ width: '100%' }} paragraph={{ rows: 1 }} style={{ borderRadius: 8, padding: 16, background: '#fff' }} />)}
                 </div>
             ) : (
-                <Table scroll={{ x: true }} columns={columns} dataSource={filteredServices} rowKey="id" loading={loading}
-                    rowSelection={rowSelection} pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (total) => `${total} مورد` }} />
+                <Table
+                    scroll={{ x: true }}
+                    columns={columns}
+                    dataSource={services}
+                    rowKey="id"
+                    loading={loading}
+                    rowSelection={rowSelection}
+                    pagination={{
+                        current: page,
+                        pageSize,
+                        total,
+                        showSizeChanger: true,
+                        showTotal: (t) => `${t} مورد`,
+                        onChange: (p, ps) => {
+                            setPage(p);
+                            setPageSize(ps);
+                        },
+                    }}
+                />
             )}
             <Modal title={editingItem ? 'ویرایش سرویس' : 'افزودن سرویس'} open={modalOpen} onCancel={closeModal} onOk={() => form.submit()} width={650}>
                 <Form form={form} onFinish={handleFormSubmit} layout="vertical">

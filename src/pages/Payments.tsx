@@ -63,6 +63,9 @@ export function Payments() {
     const [loading, setLoading] = useState(true);
     const [statusFilter, setStatusFilter] = useState<string | undefined>(undefined);
     const [typeFilter, setTypeFilter] = useState<string | undefined>(undefined);
+    const [page, setPage] = useState(1);
+    const [pageSize, setPageSize] = useState(20);
+    const [total, setTotal] = useState(0);
     const [rejectModalOpen, setRejectModalOpen] = useState(false);
     const [selectedPayment, setSelectedPayment] = useState<Payment | null>(null);
     const [rejectReason, setRejectReason] = useState('');
@@ -75,17 +78,19 @@ export function Payments() {
         setLoading(true);
         try {
             const [paymentsData, statsData] = await Promise.all([
-                dashboardApi.getPayments(statusFilter, typeFilter),
+                dashboardApi.getPayments(statusFilter, typeFilter, page, pageSize),
                 dashboardApi.getPaymentStats(),
             ]);
-            setPayments(paymentsData);
+            setPayments(paymentsData.data);
+            setTotal(paymentsData.total);
             setStats(statsData);
         } finally {
             setLoading(false);
         }
     }
 
-    useEffect(() => { fetchData(); }, [statusFilter, typeFilter]);
+    useEffect(() => { setPage(1); }, [statusFilter, typeFilter]);
+    useEffect(() => { fetchData(); }, [statusFilter, typeFilter, page, pageSize]);
 
     async function handleApprove(id: number) {
         const data = await dashboardApi.approvePayment(id);
@@ -268,7 +273,24 @@ export function Payments() {
                             <Col span={6}><Card><Statistic title="رد / منقضی" value={stats.rejected} valueStyle={{ color: '#ff4d4f' }} /></Card></Col>
                         </Row>
                     )}
-                    <Table dataSource={payments} columns={columns} rowKey="id" loading={loading} scroll={{ x: 1100 }} pagination={{ pageSize: 20 }} />
+                    <Table
+                        dataSource={payments}
+                        columns={columns}
+                        rowKey="id"
+                        loading={loading}
+                        scroll={{ x: 1100 }}
+                        pagination={{
+                            current: page,
+                            pageSize,
+                            total,
+                            showSizeChanger: true,
+                            showTotal: (t) => `${t} مورد`,
+                            onChange: (p, ps) => {
+                                setPage(p);
+                                setPageSize(ps);
+                            },
+                        }}
+                    />
                 </>
             )}
             <Modal title="رد پرداخت" open={rejectModalOpen} onOk={handleReject} onCancel={() => setRejectModalOpen(false)} okText="رد کردن" cancelText="لغو">

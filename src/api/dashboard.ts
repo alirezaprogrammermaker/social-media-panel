@@ -31,8 +31,10 @@ class DashboardApi extends BaseApi {
     }
 
     // Telegram Users
-    async getTelegramUsers() {
-        return this.get<any[]>('/telegram-users');
+    async getTelegramUsers(page = 1, pageSize = 20) {
+        return this.get<{ data: any[]; total: number; page: number; pageSize: number }>(
+            `/telegram-users?page=${page}&pageSize=${pageSize}`
+        );
     }
 
     async deleteTelegramUser(chatId: number) {
@@ -91,13 +93,15 @@ class DashboardApi extends BaseApi {
     }
 
     // Payments
-    async getPayments(status?: string, type?: string) {
+    async getPayments(status?: string, type?: string, page = 1, pageSize = 20) {
         const params = new URLSearchParams();
         if (status) params.set('status', status);
         if (type) params.set('type', type);
-        const qs = params.toString();
-        const url = qs ? `/payments?${qs}` : '/payments';
-        return this.get<any[]>(url);
+        params.set('page', String(page));
+        params.set('pageSize', String(pageSize));
+        return this.get<{ data: any[]; total: number; page: number; pageSize: number }>(
+            `/payments?${params.toString()}`
+        );
     }
 
     async getPaymentStats() {

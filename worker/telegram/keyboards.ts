@@ -140,14 +140,16 @@ export function serviceKeyboard(services: { id?: number; name: string }[], page:
     return kb;
 }
 
-export function orderListKeyboard(orders: { id: number; service_name?: string; status: string; created_at: string }[], page: number = 0) {
-    const start = page * ITEMS_PER_PAGE;
-    const end = start + ITEMS_PER_PAGE;
-    const pageItems = orders.slice(start, end);
-    const totalPages = Math.ceil(orders.length / ITEMS_PER_PAGE);
+export function orderListKeyboard(
+    pageOrders: { id: number; service_name?: string; status: string; created_at: string }[],
+    page: number = 0,
+    totalCount?: number
+) {
+    const total = totalCount ?? pageOrders.length;
+    const totalPages = Math.max(1, Math.ceil(total / ITEMS_PER_PAGE));
 
     const kb = new Keyboard();
-    for (const order of pageItems) {
+    for (const order of pageOrders) {
         const statusEmoji = getStatusEmoji(order.status);
         kb.row().text(`${statusEmoji} #${order.id} - ${order.service_name || 'سرویس'}`);
     }

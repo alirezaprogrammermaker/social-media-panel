@@ -1,4 +1,6 @@
 import { Model } from './Model';
+import type { PaginatedResult } from '../utils/pagination';
+import { paginatedResult } from '../utils/pagination';
 
 export interface ServiceData {
     id?: number;
@@ -19,6 +21,8 @@ export interface ServiceData {
     updated_at?: string;
 }
 
+export type ServiceWithCategory = ServiceData & { category_name?: string };
+
 export class Service extends Model<ServiceData> {
     protected static table = 'services';
 
@@ -31,13 +35,53 @@ export class Service extends Model<ServiceData> {
         );
     }
 
-    static async getServicesWithCategory(): Promise<(ServiceData & { category_name?: string })[]> {
+    /** @deprecated Prefer getServicesWithCategoryPaginated for dashboard lists. */
+    static async getServicesWithCategory(): Promise<ServiceWithCategory[]> {
         return this.raw(
             `SELECT s.*, c.name as category_name
              FROM services s
              LEFT JOIN categories c ON s.category_id = c.id
              ORDER BY c.sort_order, c.name, s.name`
         );
+    }
+
+    static async getServicesWithCategoryPaginated(
+        page: number,
+        pageSize: number,
+        filters?: { q?: string | null }
+    ): Promise<PaginatedResult<ServiceWithCategory>> {
+        const offset = (page - 1) * pageSize;
+        const q = filters?.q?.trim();
+        const where: string[] = [];
+        const params: any[] = [];
+
+        if (q) {
+            where.push('(s.name LIKE ? OR IFNULL(c.name, \'\') LIKE ? OR IFNULL(s.description, \'\') LIKE ?)');
+            const like = `%${q}%`;
+            params.push(like, like, like);
+        }
+
+        const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+        const countRow = await this.rawFirst<{ count: number }>(
+            `SELECT COUNT(*) as count
+             FROM services s
+             LEFT JOIN categories c ON s.category_id = c.id
+             ${whereSql}`,
+            ...params
+        );
+        const total = countRow?.count ?? 0;
+        const data = await this.raw<ServiceWithCategory>(
+            `SELECT s.*, c.name as category_name
+             FROM services s
+             LEFT JOIN categories c ON s.category_id = c.id
+             ${whereSql}
+             ORDER BY c.sort_order, c.name, s.name
+             LIMIT ? OFFSET ?`,
+            ...params,
+            pageSize,
+            offset
+        );
+        return paginatedResult(data, total, page, pageSize);
     }
 
     static async findByApiProviderServiceId(providerId: number, serviceId: number): Promise<ServiceData | null> {
