@@ -38,6 +38,7 @@ import {
     handleMyOrderSelect,
     handleMyOrdersBack,
     handleMyOrdersExit,
+    looksLikeOrderListButton,
 } from './handlers/myOrders';
 import { mainMenuKeyboard } from './keyboards';
 import type { Bindings } from '../types';
@@ -173,10 +174,8 @@ telegram.post('/webhook', async (c) => {
                 }
 
                 if (text === BUTTONS.BACK_TO_ORDERS) {
-                    if (myOrdersState.has(userId)) {
-                        await handleMyOrdersBack(ctx, c.env.DB, userId);
-                        return;
-                    }
+                    await handleMyOrdersBack(ctx, c.env.DB, userId);
+                    return;
                 }
 
                 // Pagination handlers
@@ -185,7 +184,14 @@ telegram.post('/webhook', async (c) => {
                     const currentOrderState = orderState.get(userId);
                     const currentMyOrdersState = myOrdersState.get(userId);
 
-                    if (currentMyOrdersState?.step === 'list') {
+                    // Prefer my-orders paging when that flow is active OR no new-order category/service step
+                    if (currentMyOrdersState?.step === 'list' || (!currentOrderState && myOrdersState.has(userId))) {
+                        await handleMyOrdersPagination(ctx, c.env.DB, userId, direction);
+                        return;
+                    }
+
+                    // If memory state was dropped but user still has order-list keyboard, allow paging
+                    if (!currentOrderState && !aiChatState.has(userId) && !paymentState.has(userId)) {
                         await handleMyOrdersPagination(ctx, c.env.DB, userId, direction);
                         return;
                     }
@@ -222,9 +228,8 @@ telegram.post('/webhook', async (c) => {
                     return;
                 }
 
-                // My Orders - select order from list
-                const currentMyOrdersState = myOrdersState.get(userId);
-                if (currentMyOrdersState?.step === 'list' && text && !aiChatState.has(userId)) {
+                // My Orders — match list button even if Worker in-memory state was lost
+                if (text && looksLikeOrderListButton(text) && !aiChatState.has(userId)) {
                     const handled = await handleMyOrderSelect(ctx, c.env.DB, userId, text);
                     if (handled) return;
                 }

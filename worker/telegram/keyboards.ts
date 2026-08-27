@@ -150,8 +150,15 @@ export function orderListKeyboard(
 
     const kb = new Keyboard();
     for (const order of pageOrders) {
-        const statusEmoji = getStatusEmoji(order.status);
-        kb.row().text(`${statusEmoji} #${order.id} - ${order.service_name || 'سرویس'}`);
+        // Telegram reply buttons max 64 chars — keep "#id" visible
+        const emoji = getStatusEmoji(order.status);
+        const prefix = `${emoji} #${order.id} - `;
+        const maxNameLen = Math.max(1, 64 - prefix.length);
+        let name = order.service_name || 'سرویس';
+        if (name.length > maxNameLen) {
+            name = `${name.slice(0, Math.max(1, maxNameLen - 1))}…`;
+        }
+        kb.row().text(`${prefix}${name}`);
     }
 
     const navRow: string[] = [];

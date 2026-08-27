@@ -15,6 +15,19 @@ const statusLabels: Record<string, string> = {
     'Canceled': 'لغو شده',
 };
 
+/** Reply-keyboard order rows look like: "✅ #12 - Service name" */
+export function looksLikeOrderListButton(text: string): boolean {
+    if (!text) return false;
+    return /[#＃]\d+/.test(text) && (/\s-\s/.test(text) || /[⏳🔄✅⚠️⚙️❌📋]/.test(text));
+}
+
+function escapeHtml(value: string): string {
+    return value
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
 function toPersianDigits(num: number | string): string {
     const persianDigits = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
     return String(num).replace(/\d/g, (d) => persianDigits[parseInt(d)]);
@@ -51,6 +64,7 @@ export async function handleMyOrders(ctx: any, db: D1Database, userId: number) {
     const { orders, total, totalPages, page } = await loadOrdersPage(db, userId, 0);
 
     if (total === 0) {
+        myOrdersState.delete(userId);
         await ctx.reply(MESSAGES.MY_ORDERS_EMPTY, { reply_markup: await mainMenuKeyboard(db, userId) });
         return;
     }
@@ -64,11 +78,10 @@ export async function handleMyOrders(ctx: any, db: D1Database, userId: number) {
 
 export async function handleMyOrdersPagination(ctx: any, db: D1Database, userId: number, direction: 'next' | 'prev') {
     const state = myOrdersState.get(userId);
-    if (!state || state.step !== 'list') return false;
-
-    let targetPage = state.page;
-    if (direction === 'next') targetPage = state.page + 1;
-    else if (direction === 'prev') targetPage = state.page - 1;
+    // Workers may lose in-memory state; still allow paging from page 0
+    let targetPage = state?.page ?? 0;
+    if (direction === 'next') targetPage += 1;
+    else if (direction === 'prev') targetPage -= 1;
 
     const { orders, total, totalPages, page: newPage } = await loadOrdersPage(db, userId, targetPage);
     if (total === 0) {
@@ -77,7 +90,7 @@ export async function handleMyOrdersPagination(ctx: any, db: D1Database, userId:
         return true;
     }
 
-    myOrdersState.set(userId, { ...state, page: newPage });
+    myOrdersState.set(userId, { step: 'list', page: newPage });
     await ctx.reply(MESSAGES.MY_ORDERS_PAGE(newPage + 1, totalPages), {
         reply_markup: orderListKeyboard(orders as any, newPage, total),
     });
@@ -85,11 +98,10 @@ export async function handleMyOrdersPagination(ctx: any, db: D1Database, userId:
 }
 
 export async function handleMyOrderSelect(ctx: any, db: D1Database, userId: number, text: string) {
-    const state = myOrdersState.get(userId);
-    if (!state || state.step !== 'list') return false;
+    // Do not require myOrdersState — Cloudflare Workers isolates often drop module Maps
+    if (!looksLikeOrderListButton(text)) return false;
 
-    // Extract order ID from button text (format: "emoji #ID - ServiceName")
-    const orderIdStr = text.match(/#(\d+)/);
+    const orderIdStr = text.match(/[#＃](\d+)/);
     if (!orderIdStr) return false;
 
     const orderId = parseInt(orderIdStr[1], 10);
@@ -103,7 +115,8 @@ export async function handleMyOrderSelect(ctx: any, db: D1Database, userId: numb
         return true;
     }
 
-    myOrdersState.set(userId, { step: 'detail', page: state.page, selectedOrderId: orderId });
+    const page = myOrdersState.get(userId)?.page ?? 0;
+    myOrdersState.set(userId, { step: 'detail', page, selectedOrderId: orderId });
 
     const statusPersian = statusLabels[order.status] || order.status;
     const date = order.created_at ? formatPersianDate(order.created_at) : '-';
@@ -111,8 +124,8 @@ export async function handleMyOrderSelect(ctx: any, db: D1Database, userId: numb
     await ctx.reply(
         MESSAGES.MY_ORDER_DETAIL(
             orderId,
-            order.service_name || 'سرویس',
-            order.link || '-',
+            escapeHtml(String(order.service_name || 'سرویس')),
+            escapeHtml(String(order.link || '-')),
             order.quantity || 'پکیج',
             statusPersian,
             date,
@@ -125,13 +138,19 @@ export async function handleMyOrderSelect(ctx: any, db: D1Database, userId: numb
 
 export async function handleMyOrdersBack(ctx: any, db: D1Database, userId: number) {
     const state = myOrdersState.get(userId);
-    if (!state) return false;
 
-    if (state.step === 'detail') {
-        const { orders, total, totalPages, page } = await loadOrdersPage(db, userId, state.page);
-        myOrdersState.set(userId, { step: 'list', page });
-        await ctx.reply(MESSAGES.MY_ORDERS_PAGE(page + 1, totalPages), {
-            reply_markup: orderListKeyboard(orders as any, page, total),
+    // If memory state was lost but user presses back from detail keyboard, show list again
+    if (!state || state.step === 'detail') {
+        const page = state?.page ?? 0;
+        const { orders, total, totalPages, page: safePage } = await loadOrdersPage(db, userId, page);
+        if (total === 0) {
+            myOrdersState.delete(userId);
+            await ctx.reply(MESSAGES.MY_ORDERS_EMPTY, { reply_markup: await mainMenuKeyboard(db, userId) });
+            return true;
+        }
+        myOrdersState.set(userId, { step: 'list', page: safePage });
+        await ctx.reply(MESSAGES.MY_ORDERS_PAGE(safePage + 1, totalPages), {
+            reply_markup: orderListKeyboard(orders as any, safePage, total),
         });
         return true;
     }
