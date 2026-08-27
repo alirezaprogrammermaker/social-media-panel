@@ -674,6 +674,7 @@ smm.put('/orders/:id/cancel', async (c) => {
         const refunded = await applyOrderRefund(c.env.DB, order, 'Canceled');
         if (refunded <= 0) {
             await Order.updateStatus(id, 'Canceled');
+            await notifyCustomerOrderStatus(c.env.DB, order, 'Canceled');
         }
         return c.json({ ok: true, refunded });
     } catch (e: any) {
