@@ -213,7 +213,7 @@ function Install-DependenciesIfNeeded {
 function Get-CloudflareAccountId {
     $out = pnpm exec wrangler whoami 2>&1 | Out-String
     if ($LASTEXITCODE -ne 0) {
-        throw "wrangler whoami failed. Run: pnpm exec wrangler login"
+        throw "wrangler whoami failed (network/login). Output:`n$out"
     }
 
     $match = [regex]::Match($out, '([0-9a-f]{32})')
@@ -231,6 +231,25 @@ function Get-CloudflareAccountId {
     return $match.Groups[1].Value
 }
 
+function Invoke-WranglerJson([string[]]$WranglerArgs, [int]$Retries = 2) {
+    $attempt = 0
+    $lastOut = ""
+    while ($attempt -le $Retries) {
+        $attempt++
+        $lastOut = pnpm exec wrangler @WranglerArgs 2>&1 | Out-String
+        if ($LASTEXITCODE -eq 0) {
+            return @{ Ok = $true; Output = $lastOut }
+        }
+        $isTransient = $lastOut -match 'timed out|timeout|fetch failed|connectivity|ECONNRESET|ETIMEDOUT|network'
+        if (-not $isTransient -or $attempt -gt $Retries) {
+            return @{ Ok = $false; Output = $lastOut }
+        }
+        Write-Warn "Cloudflare API temporary failure (attempt $attempt). Retrying..."
+        Start-Sleep -Seconds (2 * $attempt)
+    }
+    return @{ Ok = $false; Output = $lastOut }
+}
+
 function Test-CloudflareAccountForThisProject {
     Write-Step "Checking Cloudflare login matches this project's database"
 
@@ -243,27 +262,32 @@ function Test-CloudflareAccountForThisProject {
 
     Write-Host "    Local DB: $dbName ($dbId)"
 
-    try {
-        $accountId = Get-CloudflareAccountId
-        Write-Host "    Logged-in account: $accountId"
-    } catch {
-        Write-Warn $_.Exception.Message
-        return $false
-    }
-
-    $infoJson = pnpm exec wrangler d1 info $dbName --json 2>&1 | Out-String
-    if ($LASTEXITCODE -ne 0) {
+    # Primary check: can this login read THIS database?
+    $infoResult = Invoke-WranglerJson @("d1", "info", $dbName, "--json")
+    if (-not $infoResult.Ok) {
+        $out = $infoResult.Output
+        if ($out -match 'timed out|timeout|fetch failed|connectivity|ECONNRESET|ETIMEDOUT|network') {
+            Write-Warn "Cloudflare API timed out / network error while checking D1."
+            Write-Warn "Your login may be fine — try again in a minute."
+            Write-Host $out
+            return $false
+        }
+        if ($out -match 'not valid|not authorized|7403|Authentication|Unauthorized|could not find') {
+            Write-Warn "wrangler d1 info failed for '$dbName' (auth/account issue)."
+            Write-Warn "Make sure this folder uses the correct auth profile, then: npx wrangler whoami"
+            Write-Host $out
+            return $false
+        }
         Write-Warn "wrangler d1 info failed for '$dbName'."
-        Write-Warn "You are probably logged into a different Cloudflare account than this clone."
-        Write-Host $infoJson
+        Write-Host $out
         return $false
     }
 
     try {
-        $info = $infoJson | ConvertFrom-Json
+        $info = $infoResult.Output | ConvertFrom-Json
     } catch {
         Write-Warn "Could not parse d1 info JSON"
-        Write-Host $infoJson
+        Write-Host $infoResult.Output
         return $false
     }
 
@@ -273,7 +297,7 @@ function Test-CloudflareAccountForThisProject {
 
     if (-not $remoteId) {
         Write-Warn "d1 info did not include a database id"
-        Write-Host $infoJson
+        Write-Host $infoResult.Output
         return $false
     }
 
@@ -285,6 +309,15 @@ function Test-CloudflareAccountForThisProject {
         return $false
     }
 
+    $accountId = $null
+    try {
+        $accountId = Get-CloudflareAccountId
+        Write-Host "    Logged-in account: $accountId"
+    } catch {
+        # whoami can flake while d1 info already proved DB access — do not block deploy
+        Write-Warn "wrangler whoami failed (non-blocking): $($_.Exception.Message)"
+    }
+
     $localCfgPath = Join-Path $Root ".update-config.local.json"
     @{
         expectedAccountId = $accountId
@@ -293,7 +326,7 @@ function Test-CloudflareAccountForThisProject {
         updatedAt         = (Get-Date).ToString("o")
     } | ConvertTo-Json | Set-Content -Path $localCfgPath -Encoding UTF8
 
-    Write-Ok "Cloudflare account owns this project's D1 database"
+    Write-Ok "Cloudflare account can access this project's D1 database"
     return $true
 }
 
@@ -329,9 +362,10 @@ try {
     if (-not $ok) {
         Write-Host ""
         Write-Warn "Code was updated, but deploy was NOT run."
-        Write-Warn "Log into the correct Cloudflare account, then run:"
-        Write-Warn "  .\scripts\update-project.ps1"
-        Write-Warn "Or deploy manually after: pnpm exec wrangler login"
+        Write-Warn "If this was a network timeout, just re-run:"
+        Write-Warn "  .\update.bat"
+        Write-Warn "If auth is wrong for this folder, check: npx wrangler whoami"
+        Write-Warn "Or deploy manually: pnpm run deploy"
         exit 2
     }
 
