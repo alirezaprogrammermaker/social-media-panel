@@ -3,7 +3,7 @@ import { PaymentMethod } from '../../db/PaymentMethod';
 import { Payment } from '../../db/Payment';
 import { TelegramUser } from '../../db/TelegramUser';
 import { Setting } from '../../db/Setting';
-import { paymentState } from '../state';
+import { getPaymentFlow, setPaymentFlow, clearPaymentFlow, startPaymentFlow } from '../botFlows';
 import {
     helpKeyboard,
     mainMenuKeyboard,
@@ -156,13 +156,13 @@ export async function handleAddBalance(ctx: any, db: D1Database, env?: Bindings)
         return;
     }
 
-    paymentState.set(userId, { step: 'method' });
+    await startPaymentFlow(db, userId, { step: 'method' });
     await ctx.reply(MESSAGES.SELECT_PAYMENT_METHOD, { reply_markup: paymentMethodKeyboard(methods) });
 }
 
 // Step 2: Handle payment method selection
 export async function handlePaymentMethodSelect(ctx: any, db: D1Database, userId: number, text: string, env?: Bindings) {
-    const state = paymentState.get(userId);
+    const state = await getPaymentFlow(db, userId);
     if (!state || state.step !== 'method') return false;
 
     PaymentMethod.use(db);
@@ -186,11 +186,11 @@ export async function handlePaymentMethodSelect(ctx: any, db: D1Database, userId
     if (PaymentMethod.isCryptoMethod(selected)) {
         if (!env || !(await isCryptoGatewayConfigured(db, env))) {
             await ctx.reply(MESSAGES.CRYPTO_GATEWAY_NOT_CONFIGURED, { reply_markup: await mainMenuKeyboard(db, userId) });
-            paymentState.delete(userId);
+            await clearPaymentFlow(db, userId);
             return true;
         }
 
-        paymentState.set(userId, {
+        await setPaymentFlow(db, userId, {
             step: 'crypto_network',
             methodId: selected.id,
             methodName: selected.name,
@@ -208,7 +208,7 @@ export async function handlePaymentMethodSelect(ctx: any, db: D1Database, userId
         return true;
     }
 
-    paymentState.set(userId, {
+    await setPaymentFlow(db, userId, {
         step: 'amount',
         methodId: selected.id,
         methodName: selected.name,
@@ -226,8 +226,8 @@ export async function handlePaymentMethodSelect(ctx: any, db: D1Database, userId
     return true;
 }
 
-export async function handleCryptoNetworkSelect(ctx: any, userId: number, text: string) {
-    const state = paymentState.get(userId);
+export async function handleCryptoNetworkSelect(ctx: any, db: D1Database, userId: number, text: string) {
+    const state = await getPaymentFlow(db, userId);
     if (!state || state.step !== 'crypto_network' || !state.isCrypto) return false;
 
     const selected = CRYPTO_NETWORKS.find((n) => n.label === text || n.id === text);
@@ -238,7 +238,7 @@ export async function handleCryptoNetworkSelect(ctx: any, userId: number, text: 
         return true;
     }
 
-    paymentState.set(userId, {
+    await setPaymentFlow(db, userId, {
         ...state,
         step: 'amount',
         networkId: selected.id,
@@ -253,7 +253,7 @@ export async function handleCryptoNetworkSelect(ctx: any, userId: number, text: 
 
 // Step 3: Handle amount input
 export async function handlePaymentAmount(ctx: any, userId: number, text: string, db?: D1Database, env?: Bindings) {
-    const state = paymentState.get(userId);
+    const state = await getPaymentFlow(db, userId);
     if (!state || state.step !== 'amount') return false;
 
     const amount = parseInt(text.replace(/[^\d]/g, ''), 10);
@@ -275,14 +275,14 @@ export async function handlePaymentAmount(ctx: any, userId: number, text: string
     if (state.isCrypto) {
         if (!db || !env) {
             await ctx.reply(MESSAGES.CRYPTO_GATEWAY_NOT_CONFIGURED, { reply_markup: helpKeyboard(false) });
-            paymentState.delete(userId);
+            await clearPaymentFlow(db, userId);
             return true;
         }
         await createCryptoTopUp(ctx, db, env, userId, { ...state, amount });
         return true;
     }
 
-    paymentState.set(userId, { ...state, step: 'receipt', amount });
+    await setPaymentFlow(db, userId, { ...state, step: 'receipt', amount });
 
     await ctx.reply(
         MESSAGES.AMOUNT_RECEIVED(amount, state.cardNumber || '', state.cardHolder || ''),
@@ -310,7 +310,7 @@ async function createCryptoTopUp(
 
     if (!(await isCryptoGatewayConfigured(db, env))) {
         await ctx.reply(MESSAGES.CRYPTO_GATEWAY_NOT_CONFIGURED, { reply_markup: await mainMenuKeyboard(db, userId) });
-        paymentState.delete(userId);
+        await clearPaymentFlow(db, userId);
         return;
     }
 
@@ -319,7 +319,7 @@ async function createCryptoTopUp(
     const dollarRate = parseFloat(dollarRateRaw || '0');
     if (!dollarRate || dollarRate <= 0) {
         await ctx.reply(MESSAGES.CRYPTO_DOLLAR_RATE_MISSING, { reply_markup: await mainMenuKeyboard(db, userId) });
-        paymentState.delete(userId);
+        await clearPaymentFlow(db, userId);
         return;
     }
 
@@ -335,7 +335,7 @@ async function createCryptoTopUp(
         const cryptoMethod = await PaymentMethod.findCryptoMethod();
         if (!cryptoMethod) {
             await ctx.reply(MESSAGES.CRYPTO_GATEWAY_NOT_CONFIGURED, { reply_markup: await mainMenuKeyboard(db, userId) });
-            paymentState.delete(userId);
+            await clearPaymentFlow(db, userId);
             return;
         }
         methodId = cryptoMethod.id;
@@ -390,7 +390,7 @@ async function createCryptoTopUp(
             updated_at: nowTehran(),
         });
 
-        paymentState.set(userId, {
+        await setPaymentFlow(db, userId, {
             step: 'crypto_waiting',
             isCrypto: true,
             amount,
@@ -420,13 +420,13 @@ async function createCryptoTopUp(
     } catch (e: any) {
         const msg = e instanceof CryptoGatewayError ? e.message : (e?.message || 'خطای ناشناخته');
         await Payment.markCryptoTerminal(localId, 'failed', 'failed', msg);
-        paymentState.delete(userId);
+        await clearPaymentFlow(db, userId);
         await ctx.reply(MESSAGES.CRYPTO_CREATE_FAILED(msg), { reply_markup: await mainMenuKeyboard(db, userId) });
     }
 }
 
 export async function handleCryptoStatusCheck(ctx: any, db: D1Database, env: Bindings, userId: number) {
-    const state = paymentState.get(userId);
+    const state = await getPaymentFlow(db, userId);
     let localId = state?.localPaymentId;
 
     Payment.use(db);
@@ -439,7 +439,7 @@ export async function handleCryptoStatusCheck(ctx: any, db: D1Database, env: Bin
 
     if (!localId) {
         await ctx.reply(MESSAGES.CRYPTO_NO_PENDING, { reply_markup: await mainMenuKeyboard(db, userId) });
-        paymentState.delete(userId);
+        await clearPaymentFlow(db, userId);
         return true;
     }
 
@@ -453,19 +453,19 @@ export async function handleCryptoStatusCheck(ctx: any, db: D1Database, env: Bin
 
     const payment = result.payment as any;
     if (payment?.status === 'approved') {
-        paymentState.delete(userId);
+        await clearPaymentFlow(db, userId);
         await ctx.reply(MESSAGES.CRYPTO_PAYMENT_CONFIRMED(payment.amount), { reply_markup: await mainMenuKeyboard(db, userId) });
         return true;
     }
 
     if (payment?.status === 'expired' || payment?.crypto_status === 'expired') {
-        paymentState.delete(userId);
+        await clearPaymentFlow(db, userId);
         await ctx.reply(MESSAGES.CRYPTO_PAYMENT_EXPIRED, { reply_markup: await mainMenuKeyboard(db, userId) });
         return true;
     }
 
     if (payment?.status === 'failed' || payment?.crypto_status === 'failed') {
-        paymentState.delete(userId);
+        await clearPaymentFlow(db, userId);
         await ctx.reply(MESSAGES.CRYPTO_PAYMENT_FAILED, { reply_markup: await mainMenuKeyboard(db, userId) });
         return true;
     }
@@ -479,7 +479,7 @@ export async function handleCryptoStatusCheck(ctx: any, db: D1Database, env: Bin
 
 // Step 4: Handle receipt image
 export async function handlePaymentReceipt(ctx: any, db: D1Database, userId: number, AI?: Ai) {
-    const state = paymentState.get(userId);
+    const state = await getPaymentFlow(db, userId);
     if (!state || state.step !== 'receipt') return false;
 
     if (isUserBanned(userId)) {
@@ -535,7 +535,7 @@ export async function handlePaymentReceipt(ctx: any, db: D1Database, userId: num
                                     `علت: ارسال عکس نامعتبر (${maxAttempts} بار متوالی)`,
                                     { reply_markup: await mainMenuKeyboard(db, userId) }
                                 );
-                                paymentState.delete(userId);
+                                await clearPaymentFlow(db, userId);
                                 return true;
                             } else {
                                 invalidReceiptAttempts.set(userId, record);
@@ -575,7 +575,7 @@ export async function handlePaymentReceipt(ctx: any, db: D1Database, userId: num
 
     const latestPayment = await Payment.findLatestByUserChatId(userId);
     const paymentId = latestPayment?.id;
-    paymentState.delete(userId);
+    await clearPaymentFlow(db, userId);
 
     // Send to admin
     Setting.use(db);
@@ -627,7 +627,7 @@ export async function handlePaymentMethodCallback(ctx: any, db: D1Database, user
         return;
     }
 
-    paymentState.set(userId, {
+    await setPaymentFlow(db, userId, {
         step: 'amount',
         methodId: method.id,
         methodName: method.name,
@@ -646,17 +646,17 @@ export async function handlePaymentMethodCallback(ctx: any, db: D1Database, user
 
 // Handle back button in payment flow
 export async function handlePaymentBack(ctx: any, db: D1Database, userId: number, env?: Bindings) {
-    const state = paymentState.get(userId);
+    const state = await getPaymentFlow(db, userId);
     if (!state) return false;
 
     if (state.step === 'crypto_network') {
-        paymentState.delete(userId);
+        await clearPaymentFlow(db, userId);
         await handleAddBalance(ctx, db, env);
         return true;
     }
 
     if (state.step === 'receipt' || state.step === 'amount' || state.step === 'crypto_waiting') {
-        paymentState.delete(userId);
+        await clearPaymentFlow(db, userId);
         await ctx.reply('❌ افزایش موجودی لغو شد.', { reply_markup: await mainMenuKeyboard(db, userId) });
         return true;
     }

@@ -1,16 +1,16 @@
 import { AiSetting, AiUsageLog } from '../../db/AiSetting';
 import { BotHelp } from '../../db/BotHelp';
-import { aiChatState } from '../state';
+import { startAiFlow, clearAiFlow } from '../botFlows';
 import { backKeyboard, mainMenuKeyboard } from '../keyboards';
 import { MESSAGES } from '../constants';
 
-export async function handleAiEnter(ctx: any, userId: number) {
-    aiChatState.set(userId, { step: 'waiting_question' });
+export async function handleAiEnter(ctx: any, db: D1Database, userId: number) {
+    await startAiFlow(db, userId);
     await ctx.reply(MESSAGES.AI_ENTER, { reply_markup: backKeyboard() });
 }
 
 export async function handleAiExit(ctx: any, db: D1Database, userId: number) {
-    aiChatState.delete(userId);
+    await clearAiFlow(db, userId);
     await ctx.reply(MESSAGES.AI_EXIT, { reply_markup: await mainMenuKeyboard(db, userId) });
 }
 
@@ -26,7 +26,7 @@ export async function handleAiMessage(
         const aiEnabled = await AiSetting.get('ai_user_enabled');
 
         if (aiEnabled !== 'true') {
-            aiChatState.delete(userId);
+            await clearAiFlow(db, userId);
             await ctx.reply(MESSAGES.AI_DISABLED, { reply_markup: await mainMenuKeyboard(db, userId) });
             return;
         }
@@ -38,7 +38,7 @@ export async function handleAiMessage(
             AiUsageLog.use(db);
             const todayUsage = await AiUsageLog.getTodayUsageByChatId(userId);
             if (todayUsage.totalRequests >= dailyLimit) {
-                aiChatState.delete(userId);
+                await clearAiFlow(db, userId);
                 await ctx.reply(MESSAGES.AI_DAILY_LIMIT(dailyLimit), { reply_markup: await mainMenuKeyboard(db, userId) });
                 return;
             }
@@ -77,11 +77,11 @@ export async function handleAiMessage(
         AiUsageLog.use(db);
         await AiUsageLog.logUsage('user', userId, maxTokens);
 
-        aiChatState.delete(userId);
+        await clearAiFlow(db, userId);
         await ctx.reply(responseText, { reply_markup: await mainMenuKeyboard(db, userId) });
     } catch (aiError) {
         console.error('AI error:', aiError);
-        aiChatState.delete(userId);
+        await clearAiFlow(db, userId);
         await ctx.reply(MESSAGES.AI_ERROR, { reply_markup: await mainMenuKeyboard(db, userId) });
     }
 }

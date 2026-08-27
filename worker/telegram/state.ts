@@ -2,7 +2,7 @@ import { Api } from 'grammy';
 
 const MEMBER_STATUSES = ['member', 'administrator', 'owner', 'creator'];
 
-// Anti-spam
+// Short-lived anti-spam only (safe in-memory; not a multi-step UI flow)
 const spamCache = new Map<number, number[]>();
 const SPAM_WINDOW = 5000;
 const SPAM_LIMIT = 5;
@@ -30,39 +30,6 @@ export function isSpamming(userId: number): boolean {
 
     return false;
 }
-
-// Payment state
-export const paymentState = new Map<number, {
-    step: 'method' | 'crypto_network' | 'amount' | 'receipt' | 'crypto_waiting';
-    methodId?: number;
-    methodName?: string;
-    cardNumber?: string;
-    cardHolder?: string;
-    minAmount?: number;
-    maxAmount?: number;
-    amount?: number;
-    isCrypto?: boolean;
-    networkId?: string;
-    localPaymentId?: number;
-}>();
-
-// AI chat state
-export const aiChatState = new Map<number, { step: 'waiting_question' }>();
-
-// Order state
-export const orderState = new Map<number, {
-    step: 'select_category' | 'select_service' | 'enter_link' | 'enter_quantity';
-    categoryId?: number;
-    categoryName?: string;
-    serviceId?: number;
-    serviceName?: string;
-    serviceType?: string;
-    serviceMin?: number;
-    serviceMax?: number;
-    link?: string;
-    categoryPage?: number;
-    servicePage?: number;
-}>();
 
 export async function checkMembership(
     api: Api,

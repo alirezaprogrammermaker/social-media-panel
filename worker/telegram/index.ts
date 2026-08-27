@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { Bot, Api, webhookCallback } from 'grammy';
 import { TelegramUser } from '../db/TelegramUser';
 import { Setting } from '../db/Setting';
-import { isSpamming, paymentState, aiChatState, orderState } from './state';
+import { isSpamming } from './state';
 import { BUTTONS, MESSAGES } from './constants';
 import { handleStart, checkChannelMembership } from './handlers/start';
 import { handleHelp, handleHelpCallback } from './handlers/help';
@@ -38,10 +38,16 @@ import {
     handleMyOrderSelect,
     handleMyOrdersBack,
     looksLikeOrderListButton,
-    getMyOrdersStep,
 } from './handlers/myOrders';
 import { mainMenuKeyboard } from './keyboards';
+import {
+    BOT_FLOWS,
+    clearFlowSession,
+    flowStateFromSession,
+    getActiveFlowMap,
+} from './flowSession';
 import type { Bindings } from '../types';
+import type { AiFlowData, MyOrdersFlowData, OrderFlowData, PaymentFlowData } from './botFlows';
 
 const telegram = new Hono<{ Bindings: Bindings }>();
 
@@ -93,30 +99,35 @@ telegram.post('/webhook', async (c) => {
                 const blocked = await checkChannelMembership(ctx, api, c.env.DB, userId);
                 if (blocked) return;
 
+                // One D1 round-trip for all active bot flows
+                const flows = await getActiveFlowMap(c.env.DB, userId);
+                const orderState = flowStateFromSession<OrderFlowData>(flows.get(BOT_FLOWS.ORDER) as any);
+                const paymentState = flowStateFromSession<PaymentFlowData>(flows.get(BOT_FLOWS.PAYMENT) as any);
+                const aiState = flowStateFromSession<AiFlowData>(flows.get(BOT_FLOWS.AI_CHAT) as any);
+                const myOrdersState = flowStateFromSession<MyOrdersFlowData>(flows.get(BOT_FLOWS.MY_ORDERS) as any);
+
                 if (text === BUTTONS.HELP) {
                     await handleHelp(ctx, c.env.DB);
                     return;
                 }
 
                 if (text === BUTTONS.AI_CHAT) {
-                    await handleAiEnter(ctx, userId);
+                    await handleAiEnter(ctx, c.env.DB, userId);
                     return;
                 }
 
                 if (text === BUTTONS.BACK) {
-                    if (aiChatState.has(userId)) {
+                    if (aiState) {
                         await handleAiExit(ctx, c.env.DB, userId);
                         return;
                     }
 
-                    const myOrdersStep = await getMyOrdersStep(c.env.DB, userId);
-                    if (myOrdersStep) {
+                    if (myOrdersState) {
                         await handleMyOrdersBack(ctx, c.env.DB, userId);
                         return;
                     }
 
-                    // Check payment back
-                    if (paymentState.has(userId)) {
+                    if (paymentState) {
                         const handled = await handlePaymentBack(ctx, c.env.DB, userId, c.env);
                         if (handled) return;
                     }
@@ -126,8 +137,8 @@ telegram.post('/webhook', async (c) => {
                 }
 
                 if (text && text.includes('لغو افزایش موجودی')) {
-                    if (paymentState.has(userId)) {
-                        paymentState.delete(userId);
+                    if (paymentState) {
+                        await clearFlowSession(c.env.DB, userId, BOT_FLOWS.PAYMENT);
                         await ctx.reply('❌ افزایش موجودی لغو شد.', { reply_markup: await mainMenuKeyboard(c.env.DB, userId) });
                         return;
                     }
@@ -182,53 +193,49 @@ telegram.post('/webhook', async (c) => {
                 // Pagination handlers
                 if (text === '◀️ قبلی' || text === 'بعدی ▶️') {
                     const direction = text === 'بعدی ▶️' ? 'next' as const : 'prev' as const;
-                    const currentOrderState = orderState.get(userId);
-                    const myOrdersStep = await getMyOrdersStep(c.env.DB, userId);
 
-                    if (myOrdersStep === 'list') {
+                    if (myOrdersState?.step === 'list') {
                         await handleMyOrdersPagination(ctx, c.env.DB, userId, direction);
                         return;
                     }
 
-                    if (currentOrderState?.step === 'select_category') {
+                    if (orderState?.step === 'select_category') {
                         await handleCategoryPagination(ctx, c.env.DB, userId, direction);
                         return;
                     }
 
-                    if (currentOrderState?.step === 'select_service') {
+                    if (orderState?.step === 'select_service') {
                         await handleServicePagination(ctx, c.env.DB, userId, direction);
                         return;
                     }
                 }
 
-                const currentOrderState = orderState.get(userId);
-                if (currentOrderState?.step === 'select_category' && text && !aiChatState.has(userId)) {
+                if (orderState?.step === 'select_category' && text && !aiState) {
                     await handleCategorySelect(ctx, c.env.DB, userId, text);
                     return;
                 }
 
-                if (currentOrderState?.step === 'select_service' && text && !aiChatState.has(userId)) {
+                if (orderState?.step === 'select_service' && text && !aiState) {
                     await handleServiceSelect(ctx, c.env.DB, userId, text);
                     return;
                 }
 
-                if (currentOrderState?.step === 'enter_link' && text && !aiChatState.has(userId)) {
+                if (orderState?.step === 'enter_link' && text && !aiState) {
                     await handleLinkInput(ctx, c.env.DB, userId, text);
                     return;
                 }
 
-                if (currentOrderState?.step === 'enter_quantity' && text && !aiChatState.has(userId)) {
+                if (orderState?.step === 'enter_quantity' && text && !aiState) {
                     await handleQuantityInput(ctx, c.env.DB, userId, text);
                     return;
                 }
 
-                // My Orders — match list button even if Worker in-memory state was lost
-                if (text && looksLikeOrderListButton(text) && !aiChatState.has(userId)) {
+                if (text && looksLikeOrderListButton(text) && !aiState) {
                     const handled = await handleMyOrderSelect(ctx, c.env.DB, userId, text);
                     if (handled) return;
                 }
 
-                if (aiChatState.has(userId) && text) {
+                if (aiState && text) {
                     await handleAiMessage(ctx, c.env.DB, c.env.AI, userId, text);
                     return;
                 }
@@ -238,23 +245,22 @@ telegram.post('/webhook', async (c) => {
                     return;
                 }
 
-                const state = paymentState.get(userId);
-                if (state?.step === 'method' && text && !aiChatState.has(userId)) {
+                if (paymentState?.step === 'method' && text && !aiState) {
                     const handled = await handlePaymentMethodSelect(ctx, c.env.DB, userId, text, c.env);
                     if (handled) return;
                 }
 
-                if (state?.step === 'crypto_network' && text && !aiChatState.has(userId)) {
-                    const handled = await handleCryptoNetworkSelect(ctx, userId, text);
+                if (paymentState?.step === 'crypto_network' && text && !aiState) {
+                    const handled = await handleCryptoNetworkSelect(ctx, c.env.DB, userId, text);
                     if (handled) return;
                 }
 
-                if (state?.step === 'amount' && text && !aiChatState.has(userId)) {
+                if (paymentState?.step === 'amount' && text && !aiState) {
                     await handlePaymentAmount(ctx, userId, text, c.env.DB, c.env);
                     return;
                 }
 
-                if (state?.step === 'receipt' && ctx.message.photo && !aiChatState.has(userId)) {
+                if (paymentState?.step === 'receipt' && ctx.message.photo && !aiState) {
                     await handlePaymentReceipt(ctx, c.env.DB, userId, c.env.AI);
                     return;
                 }

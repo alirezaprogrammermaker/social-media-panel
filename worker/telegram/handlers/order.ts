@@ -4,7 +4,7 @@ import { Order } from '../../db/Order';
 import { ApiProvider } from '../../db/ApiProvider';
 import { TelegramUser } from '../../db/TelegramUser';
 import { SmmApiProvider } from '../../api/SmmApiProvider';
-import { orderState } from '../state';
+import { getOrderFlow, setOrderFlow, clearOrderFlow, startOrderFlow } from '../botFlows';
 import { categoryKeyboard, serviceKeyboard, orderBackKeyboard, ITEMS_PER_PAGE, mainMenuKeyboard } from '../keyboards';
 import { MESSAGES } from '../constants';
 import { nowTehran } from '../../utils/date';
@@ -19,15 +19,15 @@ export async function handleOrderStart(ctx: any, db: D1Database, userId: number)
         return;
     }
 
-    orderState.set(userId, { step: 'select_category', categoryPage: 0 });
+    await startOrderFlow(db, userId, { step: 'select_category', categoryPage: 0 });
     await ctx.reply(MESSAGES.SELECT_CATEGORY, {
         reply_markup: categoryKeyboard(categories, 0),
     });
 }
 
 export async function handleOrderCancel(ctx: any, db: D1Database, userId: number) {
-    if (orderState.has(userId)) {
-        orderState.delete(userId);
+    if (await getOrderFlow(db, userId)) {
+        await clearOrderFlow(db, userId);
         await ctx.reply(MESSAGES.ORDER_CANCELLED, { reply_markup: await mainMenuKeyboard(db, userId) });
         return true;
     }
@@ -35,11 +35,11 @@ export async function handleOrderCancel(ctx: any, db: D1Database, userId: number
 }
 
 export async function handleOrderBack(ctx: any, db: D1Database, userId: number) {
-    const state = orderState.get(userId);
+    const state = await getOrderFlow(db, userId);
     if (!state) return false;
 
     if (state.step === 'select_category') {
-        orderState.delete(userId);
+        await clearOrderFlow(db, userId);
         await ctx.reply(MESSAGES.AI_EXIT, { reply_markup: await mainMenuKeyboard(db, userId) });
         return true;
     }
@@ -47,7 +47,7 @@ export async function handleOrderBack(ctx: any, db: D1Database, userId: number) 
     if (state.step === 'select_service') {
         Category.use(db);
         const categories = await Category.getActiveCategories();
-        orderState.set(userId, { step: 'select_category', categoryPage: state.categoryPage || 0 });
+        await setOrderFlow(db, userId, { step: 'select_category', categoryPage: state.categoryPage || 0 });
         await ctx.reply(MESSAGES.SELECT_CATEGORY, {
             reply_markup: categoryKeyboard(categories, state.categoryPage || 0),
         });
@@ -57,7 +57,7 @@ export async function handleOrderBack(ctx: any, db: D1Database, userId: number) 
     if (state.step === 'enter_link') {
         Service.use(db);
         const services = await Service.getActiveByCategory(state.categoryId!);
-        orderState.set(userId, { step: 'select_service', categoryId: state.categoryId, categoryName: state.categoryName, servicePage: state.servicePage || 0 });
+        await setOrderFlow(db, userId, { step: 'select_service', categoryId: state.categoryId, categoryName: state.categoryName, servicePage: state.servicePage || 0 });
         await ctx.reply(MESSAGES.SELECT_SERVICE(state.categoryName!), {
             reply_markup: serviceKeyboard(services, state.servicePage || 0),
         });
@@ -65,7 +65,7 @@ export async function handleOrderBack(ctx: any, db: D1Database, userId: number) 
     }
 
     if (state.step === 'enter_quantity') {
-        orderState.set(userId, { step: 'enter_link' });
+        await setOrderFlow(db, userId, { ...state, step: 'enter_link' });
         await ctx.reply(MESSAGES.ENTER_LINK, {
             reply_markup: orderBackKeyboard(),
         });
@@ -76,7 +76,7 @@ export async function handleOrderBack(ctx: any, db: D1Database, userId: number) 
 }
 
 export async function handleCategoryPagination(ctx: any, db: D1Database, userId: number, direction: 'next' | 'prev') {
-    const state = orderState.get(userId);
+    const state = await getOrderFlow(db, userId);
     if (!state || state.step !== 'select_category') return false;
 
     Category.use(db);
@@ -91,7 +91,7 @@ export async function handleCategoryPagination(ctx: any, db: D1Database, userId:
         newPage = currentPage - 1;
     }
 
-    orderState.set(userId, { ...state, categoryPage: newPage });
+    await setOrderFlow(db, userId, { ...state, categoryPage: newPage });
     await ctx.reply(MESSAGES.SELECT_CATEGORY, {
         reply_markup: categoryKeyboard(categories, newPage),
     });
@@ -99,7 +99,7 @@ export async function handleCategoryPagination(ctx: any, db: D1Database, userId:
 }
 
 export async function handleServicePagination(ctx: any, db: D1Database, userId: number, direction: 'next' | 'prev') {
-    const state = orderState.get(userId);
+    const state = await getOrderFlow(db, userId);
     if (!state || state.step !== 'select_service') return false;
 
     Service.use(db);
@@ -114,7 +114,7 @@ export async function handleServicePagination(ctx: any, db: D1Database, userId: 
         newPage = currentPage - 1;
     }
 
-    orderState.set(userId, { ...state, servicePage: newPage });
+    await setOrderFlow(db, userId, { ...state, servicePage: newPage });
     await ctx.reply(MESSAGES.SELECT_SERVICE(state.categoryName!), {
         reply_markup: serviceKeyboard(services, newPage),
     });
@@ -131,14 +131,14 @@ export async function handleCategorySelect(ctx: any, db: D1Database, userId: num
     }
 
     // Set state early to prevent race conditions with quick consecutive messages
-    orderState.set(userId, { step: 'select_service', categoryId: category.id, categoryName: category.name, servicePage: 0 });
+    await setOrderFlow(db, userId, { step: 'select_service', categoryId: category.id, categoryName: category.name, servicePage: 0 });
 
     Service.use(db);
     const services = await Service.getActiveByCategory(category.id!);
 
     if (services.length === 0) {
         await ctx.reply(MESSAGES.NO_SERVICES, { reply_markup: await mainMenuKeyboard(db, userId) });
-        orderState.delete(userId);
+        await clearOrderFlow(db, userId);
         return;
     }
 
@@ -148,7 +148,7 @@ export async function handleCategorySelect(ctx: any, db: D1Database, userId: num
 }
 
 export async function handleServiceSelect(ctx: any, db: D1Database, userId: number, text: string) {
-    const state = orderState.get(userId);
+    const state = await getOrderFlow(db, userId);
     if (!state) {
         console.log('No state found for user:', userId);
         return;
@@ -241,7 +241,7 @@ export async function handleServiceSelect(ctx: any, db: D1Database, userId: numb
 
     const typeLabel = service.type || 'Default';
 
-    orderState.set(userId, {
+    await setOrderFlow(db, userId, {
         ...state,
         step: 'enter_link',
         serviceId: service.id,
@@ -267,7 +267,7 @@ export async function handleServiceSelect(ctx: any, db: D1Database, userId: numb
 }
 
 export async function handleLinkInput(ctx: any, db: D1Database, userId: number, text: string) {
-    const state = orderState.get(userId);
+    const state = await getOrderFlow(db, userId);
     if (!state) return;
 
     // Only Package services skip quantity; Default (likes/followers/etc) must send quantity to provider
@@ -283,11 +283,11 @@ export async function handleLinkInput(ctx: any, db: D1Database, userId: number, 
         { reply_markup: orderBackKeyboard() }
     );
 
-    orderState.set(userId, { ...state, step: 'enter_quantity', link: text });
+    await setOrderFlow(db, userId, { ...state, step: 'enter_quantity', link: text });
 }
 
 export async function handleQuantityInput(ctx: any, db: D1Database, userId: number, text: string) {
-    const state = orderState.get(userId);
+    const state = await getOrderFlow(db, userId);
     if (!state) return;
 
     const quantity = parseInt(text.replace(/[^\d]/g, ''), 10);
@@ -324,7 +324,7 @@ async function createOrder(
 
     if (!service) {
         await ctx.reply(MESSAGES.SERVICE_NOT_FOUND_SIMPLE, { reply_markup: await mainMenuKeyboard(db, userId) });
-        orderState.delete(userId);
+        await clearOrderFlow(db, userId);
         return;
     }
 
@@ -334,7 +334,7 @@ async function createOrder(
 
     if (!isPackage && (!quantityValue || quantityValue <= 0)) {
         await ctx.reply(MESSAGES.INVALID_NUMBER, { reply_markup: await mainMenuKeyboard(db, userId) });
-        orderState.delete(userId);
+        await clearOrderFlow(db, userId);
         return;
     }
 
@@ -349,7 +349,7 @@ async function createOrder(
             MESSAGES.INSUFFICIENT_BALANCE(totalCost, user?.balance || 0),
             { reply_markup: await mainMenuKeyboard(db, userId) }
         );
-        orderState.delete(userId);
+        await clearOrderFlow(db, userId);
         return;
     }
 
@@ -363,7 +363,7 @@ async function createOrder(
 
         if (!provider) {
             await ctx.reply(MESSAGES.PROVIDER_ERROR('ارائه‌دهنده غیرفعال یا یافت نشد'), { reply_markup: await mainMenuKeyboard(db, userId) });
-            orderState.delete(userId);
+            await clearOrderFlow(db, userId);
             return;
         }
 
@@ -395,7 +395,7 @@ async function createOrder(
                     MESSAGES.PROVIDER_ERROR(result.error || 'پاسخ نامعتبر از ارائه‌دهنده'),
                     { reply_markup: await mainMenuKeyboard(db, userId) }
                 );
-                orderState.delete(userId);
+                await clearOrderFlow(db, userId);
                 return;
             }
         } catch (error: any) {
@@ -404,7 +404,7 @@ async function createOrder(
                 MESSAGES.PROVIDER_ERROR(error?.message || 'خطا در ارتباط با ارائه‌دهنده'),
                 { reply_markup: await mainMenuKeyboard(db, userId) }
             );
-            orderState.delete(userId);
+            await clearOrderFlow(db, userId);
             return;
         }
     }
@@ -460,7 +460,7 @@ async function createOrder(
                     MESSAGES.INSUFFICIENT_BALANCE(totalCost, user?.balance || 0),
                     { reply_markup: await mainMenuKeyboard(db, userId) }
                 );
-                orderState.delete(userId);
+                await clearOrderFlow(db, userId);
                 return;
             }
         } else {
@@ -494,7 +494,7 @@ async function createOrder(
             }
         }
         await ctx.reply('❌ خطا در ایجاد سفارش. لطفا دوباره تلاش کنید.', { reply_markup: await mainMenuKeyboard(db, userId) });
-        orderState.delete(userId);
+        await clearOrderFlow(db, userId);
         return;
     }
 
@@ -504,7 +504,7 @@ async function createOrder(
     );
     const dbOrderId = latestOrder?.id;
 
-    orderState.delete(userId);
+    await clearOrderFlow(db, userId);
 
     await ctx.reply(
         MESSAGES.ORDER_SUCCESS(state.serviceName, state.link, isPackage ? 'پکیج' : storedQuantity, dbOrderId),
