@@ -77,6 +77,8 @@ export const MESSAGES = {
     // Payment
     SELECT_PAYMENT_METHOD: '💳 روش پرداخت را انتخاب کنید:',
     NO_PAYMENT_METHODS: 'در حال حاضر روش پرداختی فعال نیست.',
+    NO_PAYMENT_METHODS_CRYPTO_HINT:
+        'در حال حاضر روش پرداختی فعال نیست.\n\nاگر درگاه کریپتو را وصل کرده‌اید، از داشبورد → تنظیمات → درگاه کریپتو کلید API (cg_...) را ذخیره کنید و روش «پرداخت کریپتو» را در روش‌های پرداخت فعال نگه دارید.',
     ENTER_AMOUNT: (cardNumber: string, cardHolder: string) =>
         `💳 پرداخت کارت به کارت\n\n` +
         `📌 شماره کارت: <code>${cardNumber}</code>\n` +

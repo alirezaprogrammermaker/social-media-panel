@@ -323,6 +323,11 @@ dashboard.put('/settings/crypto-gateway', async (c) => {
                 return c.json({ error: 'کلید API باید با cg_ شروع شود' }, 400);
             }
             await Setting.set(SETTING_CRYPTO_GATEWAY_API_KEY, key);
+
+            // Ensure Telegram can list crypto as soon as the key is saved
+            const { PaymentMethod } = await import('../db/PaymentMethod');
+            PaymentMethod.use(c.env.DB);
+            await PaymentMethod.activateCryptoMethodForGateway();
         }
 
         if (typeof body.webhook_secret === 'string' && body.webhook_secret.trim()) {
@@ -742,6 +747,11 @@ dashboard.post('/payment-methods', async (c) => {
             return c.json({ error: 'نام، شماره کارت و نام صاحب کارت الزامی است' }, 400);
         }
 
+        const { CRYPTO_METHOD_CARD } = await import('../api/CryptoGateway');
+        if (card_number.trim().toUpperCase() === CRYPTO_METHOD_CARD) {
+            return c.json({ error: 'روش کریپتو به‌صورت خودکار از تنظیمات درگاه ساخته می‌شود' }, 400);
+        }
+
         if (min_amount <= 0 || max_amount <= 0 || min_amount > max_amount) {
             return c.json({ error: 'مقدار حداقل و حداکثر نامعتبر است' }, 400);
         }
@@ -773,8 +783,20 @@ dashboard.put('/payment-methods/:id', async (c) => {
         }>();
 
         PaymentMethod.use(c.env.DB);
-        const existing = await PaymentMethod.find(String(id));
+        const existing = await PaymentMethod.find(String(id)) as any;
         if (!existing) return c.json({ error: 'روش پرداخت یافت نشد' }, 404);
+
+        if (PaymentMethod.isCryptoMethod(existing)) {
+            // Keep sentinel card_number=CRYPTO intact; allow name/limits edits
+            const updates: Record<string, any> = {};
+            if (name !== undefined) updates.name = name;
+            if (min_amount !== undefined) updates.min_amount = min_amount;
+            if (max_amount !== undefined) updates.max_amount = max_amount;
+            if (Object.keys(updates).length > 0) {
+                await PaymentMethod.update(String(id), updates);
+            }
+            return c.json({ ok: true });
+        }
 
         const updates: Record<string, any> = {};
         if (name !== undefined) updates.name = name;
@@ -809,6 +831,10 @@ dashboard.delete('/payment-methods/:id', async (c) => {
     try {
         const id = Number(c.req.param('id'));
         PaymentMethod.use(c.env.DB);
+        const existing = await PaymentMethod.find(String(id)) as any;
+        if (existing && PaymentMethod.isCryptoMethod(existing)) {
+            return c.json({ error: 'روش پرداخت کریپتو را حذف نکنید؛ برای خاموش کردن، غیرفعالش کنید یا کلید درگاه را بردارید' }, 400);
+        }
         await PaymentMethod.delete(String(id));
         return c.json({ ok: true });
     } catch (e: any) {

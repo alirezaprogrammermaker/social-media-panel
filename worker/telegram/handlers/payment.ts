@@ -128,18 +128,34 @@ export async function handleAddBalance(ctx: any, db: D1Database, env?: Bindings)
     }
 
     PaymentMethod.use(db);
-    let methods = await PaymentMethod.getActiveMethods();
-    const cryptoMethod = await PaymentMethod.findCryptoMethod();
     const cryptoEnabled = env ? await isCryptoGatewayConfigured(db, env) : false;
 
-    // Only expose crypto method when API key is configured
+    // Keep CRYPTO row in sync when gateway is configured (create + activate if needed)
+    if (cryptoEnabled) {
+        try {
+            await PaymentMethod.activateCryptoMethodForGateway();
+        } catch (e: any) {
+            console.error('ensure crypto payment method failed:', e?.message);
+        }
+    }
+
+    let methods = await PaymentMethod.getActiveMethods();
+    // Never show CRYPTO via generic active list alone — only when gateway has an API key
     methods = methods.filter((m) => !PaymentMethod.isCryptoMethod(m));
-    if (cryptoEnabled && cryptoMethod) {
-        methods = [cryptoMethod, ...methods];
+
+    if (cryptoEnabled) {
+        const cryptoMethod = await PaymentMethod.findCryptoMethod();
+        if (cryptoMethod?.is_active) {
+            methods = [cryptoMethod, ...methods];
+        }
     }
 
     if (methods.length === 0) {
-        await ctx.reply(MESSAGES.NO_PAYMENT_METHODS, { reply_markup: helpKeyboard() });
+        if (!cryptoEnabled) {
+            await ctx.reply(MESSAGES.NO_PAYMENT_METHODS_CRYPTO_HINT, { reply_markup: helpKeyboard() });
+        } else {
+            await ctx.reply(MESSAGES.NO_PAYMENT_METHODS, { reply_markup: helpKeyboard() });
+        }
         return;
     }
 
@@ -153,12 +169,14 @@ export async function handlePaymentMethodSelect(ctx: any, db: D1Database, userId
     if (!state || state.step !== 'method') return false;
 
     PaymentMethod.use(db);
-    let methods = await PaymentMethod.getActiveMethods();
-    const cryptoMethod = await PaymentMethod.findCryptoMethod();
     const cryptoEnabled = env ? await isCryptoGatewayConfigured(db, env) : false;
+    let methods = await PaymentMethod.getActiveMethods();
     methods = methods.filter((m) => !PaymentMethod.isCryptoMethod(m));
-    if (cryptoEnabled && cryptoMethod) {
-        methods = [cryptoMethod, ...methods];
+    if (cryptoEnabled) {
+        const cryptoMethod = await PaymentMethod.findCryptoMethod();
+        if (cryptoMethod?.is_active) {
+            methods = [cryptoMethod, ...methods];
+        }
     }
 
     const selected = methods.find((m) => text === m.name);

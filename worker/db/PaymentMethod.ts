@@ -30,4 +30,38 @@ export class PaymentMethod extends Model<PaymentMethodRow> {
     static isCryptoMethod(method: { card_number?: string | null } | null | undefined): boolean {
         return method?.card_number === CRYPTO_METHOD_CARD;
     }
+
+    /** Create the sentinel CRYPTO row if missing. Does not change is_active of an existing row. */
+    static async ensureCryptoMethod(this: any): Promise<PaymentMethodRow> {
+        const existing = await this.findCryptoMethod();
+        if (existing) return existing;
+
+        await this.create({
+            name: '💎 پرداخت کریپتو',
+            card_number: CRYPTO_METHOD_CARD,
+            card_holder: 'Crypto Gateway',
+            min_amount: 10000,
+            max_amount: 500000000,
+            is_active: 1,
+        });
+
+        const created = await this.findCryptoMethod();
+        if (!created) {
+            throw new Error('ایجاد روش پرداخت کریپتو ناموفق بود');
+        }
+        return created;
+    }
+
+    /**
+     * When gateway API key is saved: ensure CRYPTO method exists and is active
+     * so the Telegram bot can list it immediately.
+     */
+    static async activateCryptoMethodForGateway(this: any): Promise<PaymentMethodRow> {
+        const method = await this.ensureCryptoMethod();
+        if (!method.is_active) {
+            await this.update(String(method.id), { is_active: 1 });
+            return { ...method, is_active: 1 };
+        }
+        return method;
+    }
 }
