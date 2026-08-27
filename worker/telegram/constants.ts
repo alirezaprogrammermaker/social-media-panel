@@ -16,6 +16,7 @@ export const BUTTONS = {
     CANCEL_ORDER: '❌ لغو سفارش',
     CANCEL_PAYMENT: '❌ لغو افزایش موجودی',
     CHECK_CRYPTO_STATUS: '🔄 بررسی وضعیت پرداخت کریپتو',
+    REPEAT_ORDER: '🔄 تکرار سفارش',
 } as const;
 
 // Messages
@@ -134,15 +135,28 @@ export const MESSAGES = {
     MY_ORDERS_PAGE: (page: number, totalPages: number) => `📦 سفارشات شما (صفحه ${page}/${totalPages}):`,
     MY_ORDER_ITEM: (orderId: number, serviceName: string, status: string, date: string) =>
         `🔢 #${orderId} | ${serviceName}\n📊 وضعیت: ${status}\n📅 ${date}`,
-    MY_ORDER_DETAIL: (orderId: number, serviceName: string, link: string, quantity: number | string, status: string, date: string, apiOrderId?: number) =>
-        `📦 <b>جزئیات سفارش #${orderId}</b>\n\n` +
-        `🛒 سرویس: ${serviceName}\n` +
-        `🔗 لینک: ${link || '-'}\n` +
-        `📊 تعداد: ${quantity}\n` +
-        `📋 وضعیت: ${status}\n` +
-        `📅 تاریخ: ${date}` +
-        (apiOrderId ? `\n🔢 شناسه API: ${apiOrderId}` : ''),
+    MY_ORDER_DETAIL: (opts: {
+        orderId: number;
+        serviceId: number | string;
+        serviceName: string;
+        link: string;
+        quantity: number | string;
+        charge: string;
+        status: string;
+        date: string;
+    }) =>
+        `📦 <b>جزئیات سفارش</b>\n\n` +
+        `🆔 شناسه سفارش: <code>${opts.orderId}</code>\n` +
+        `🛒 سرویس: ${opts.serviceName}\n` +
+        `🔢 شناسه سرویس: <code>${opts.serviceId}</code>\n` +
+        `🔗 لینک: ${opts.link || '-'}\n` +
+        `📊 تعداد: ${opts.quantity}\n` +
+        `💰 هزینه: ${opts.charge} تومان\n` +
+        `📋 وضعیت: ${opts.status}\n` +
+        `📅 تاریخ: ${opts.date}`,
     ORDER_NOT_FOUND: '❌ سفارش یافت نشد.',
+    REPEAT_SERVICE_UNAVAILABLE:
+        '❌ این سرویس دیگر فعال نیست یا حذف شده است.\nلطفاً از منو «ثبت سفارش» سرویس دیگری انتخاب کنید.',
 
     // Help
     SELECT_HELP: 'یک راهنما انتخاب کنید:',

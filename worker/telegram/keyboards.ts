@@ -1,4 +1,4 @@
-import { Keyboard } from 'grammy';
+import { Keyboard, InlineKeyboard } from 'grammy';
 import { BUTTONS } from './constants';
 
 export const ITEMS_PER_PAGE = 8;
@@ -194,4 +194,12 @@ export function orderDetailKeyboard() {
         .row()
         .text(BUTTONS.BACK)
         .resized();
+}
+
+/** Inline actions under order detail. */
+export function orderDetailInlineKeyboard(orderId: number) {
+    return new InlineKeyboard()
+        .text(BUTTONS.REPEAT_ORDER, `repeat_order:${orderId}`)
+        .row()
+        .text(BUTTONS.BACK_TO_ORDERS, 'my_orders_back');
 }

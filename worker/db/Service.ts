@@ -105,6 +105,18 @@ export class Service extends Model<ServiceData> {
         );
     }
 
+    /** Active service whose category is also active — safe for placing a new order. */
+    static async findActiveOrderable(serviceId: number): Promise<(ServiceData & { category_name?: string }) | null> {
+        return this.rawFirst(
+            `SELECT s.*, c.name as category_name
+             FROM services s
+             INNER JOIN categories c ON s.category_id = c.id
+             WHERE s.id = ? AND s.is_active = 1 AND c.is_active = 1
+             LIMIT 1`,
+            serviceId
+        );
+    }
+
     static async findByNameAndCategory(name: string, categoryId: number): Promise<ServiceData | null> {
         // First try exact match
         const exact = await this.rawFirst<ServiceData>(

@@ -239,17 +239,53 @@ export async function handleServiceSelect(ctx: any, db: D1Database, userId: numb
 
     console.log('Service found:', { id: service.id, name: service.name, categoryId: service.category_id });
 
+    await promptEnterLinkAfterService(ctx, db, userId, state, service);
+}
+
+/**
+ * Shared entry after a service is chosen (normal select or «تکرار سفارش»).
+ * Puts the user on `enter_link` with a durable D1 order session.
+ */
+export async function promptEnterLinkAfterService(
+    ctx: any,
+    db: D1Database,
+    userId: number,
+    prior: { categoryId?: number; categoryName?: string; categoryPage?: number; servicePage?: number },
+    service: {
+        id: number;
+        name: string;
+        type?: string;
+        description?: string;
+        rate?: string;
+        min?: string;
+        max?: string;
+        category_id: number;
+        category_name?: string;
+    },
+    options?: { exclusive?: boolean }
+) {
+    const categoryId = service.category_id ?? prior.categoryId;
+    const categoryName = service.category_name || prior.categoryName || '';
     const typeLabel = service.type || 'Default';
 
-    await setOrderFlow(db, userId, {
-        ...state,
-        step: 'enter_link',
+    const nextState = {
+        step: 'enter_link' as const,
+        categoryId,
+        categoryName,
+        categoryPage: prior.categoryPage || 0,
+        servicePage: prior.servicePage || 0,
         serviceId: service.id,
         serviceName: service.name,
         serviceType: service.type,
         serviceMin: parseInt(service.min || '1', 10),
         serviceMax: parseInt(service.max || '100000', 10),
-    });
+    };
+
+    if (options?.exclusive) {
+        await startOrderFlow(db, userId, nextState);
+    } else {
+        await setOrderFlow(db, userId, nextState);
+    }
 
     let message = `📦 ${service.name}\n\n📊 نوع: ${typeLabel}`;
     if (service.description) {

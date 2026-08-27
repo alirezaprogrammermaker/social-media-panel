@@ -37,6 +37,8 @@ import {
     handleMyOrdersPagination,
     handleMyOrderSelect,
     handleMyOrdersBack,
+    handleRepeatOrderCallback,
+    handleMyOrdersBackCallback,
     looksLikeOrderListButton,
 } from './handlers/myOrders';
 import { mainMenuKeyboard } from './keyboards';
@@ -281,23 +283,47 @@ telegram.post('/webhook', async (c) => {
                 const data = ctx.callbackQuery.data;
                 const userId = ctx.from?.id;
 
-                if (data?.startsWith('help_')) {
+                if (!userId || !data) {
+                    await ctx.answerCallbackQuery();
+                    return;
+                }
+
+                if (data.startsWith('help_')) {
                     await handleHelpCallback(ctx, c.env.DB, data);
+                    return;
                 }
 
-                if (data?.startsWith('pay_') && !data.startsWith('pay_approve_') && !data.startsWith('pay_reject_')) {
+                if (data.startsWith('repeat_order:')) {
+                    await handleRepeatOrderCallback(ctx, c.env.DB, userId, data);
+                    return;
+                }
+
+                if (data === 'my_orders_back') {
+                    await handleMyOrdersBackCallback(ctx, c.env.DB, userId);
+                    return;
+                }
+
+                if (data.startsWith('pay_') && !data.startsWith('pay_approve_') && !data.startsWith('pay_reject_')) {
                     await handlePaymentMethodCallback(ctx, c.env.DB, userId, data);
+                    return;
                 }
 
-                if (data?.startsWith('pay_approve_')) {
+                if (data.startsWith('pay_approve_')) {
                     await handlePaymentApprove(ctx, c.env.DB, api, data);
+                    return;
                 }
 
-                if (data?.startsWith('pay_reject_')) {
+                if (data.startsWith('pay_reject_')) {
                     await handlePaymentReject(ctx, c.env.DB, api, data);
+                    return;
                 }
+
+                await ctx.answerCallbackQuery();
             } catch (error: any) {
                 console.error('Error in callback handler:', error);
+                try {
+                    await ctx.answerCallbackQuery({ text: 'خطا در پردازش', show_alert: true });
+                } catch {}
             }
         });
 

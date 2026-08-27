@@ -1,5 +1,6 @@
 import { Order } from '../../db/Order';
-import { orderListKeyboard, orderDetailKeyboard, ITEMS_PER_PAGE, mainMenuKeyboard } from '../keyboards';
+import { Service } from '../../db/Service';
+import { orderListKeyboard, orderDetailInlineKeyboard, ITEMS_PER_PAGE, mainMenuKeyboard } from '../keyboards';
 import { MESSAGES } from '../constants';
 import {
     clearFlowSession,
@@ -12,6 +13,7 @@ import {
     type MyOrdersStep,
 } from '../botFlows';
 import { setFlowState } from '../flowSession';
+import { promptEnterLinkAfterService } from './order';
 
 /** Soft cap so one user cannot force huge Telegram DB scans forever. */
 const MAX_USER_ORDERS_HISTORY = 200;
@@ -151,20 +153,105 @@ export async function handleMyOrderSelect(ctx: any, db: D1Database, userId: numb
 
     const statusPersian = statusLabels[order.status] || order.status;
     const date = order.created_at ? formatPersianDate(order.created_at) : '-';
+    const chargeNum = Number(order.charge ?? 0);
+    const chargeFormatted = Number.isFinite(chargeNum)
+        ? chargeNum.toLocaleString('fa-IR')
+        : String(order.charge ?? '0');
 
+    // Inline «تکرار سفارش» + «بازگشت به لیست» under the detail message.
     await ctx.reply(
-        MESSAGES.MY_ORDER_DETAIL(
+        MESSAGES.MY_ORDER_DETAIL({
             orderId,
-            escapeHtml(String(order.service_name || 'سرویس')),
-            escapeHtml(String(order.link || '-')),
-            order.quantity || 'پکیج',
-            statusPersian,
+            serviceId: order.service_id ?? '-',
+            serviceName: escapeHtml(String(order.service_name || 'سرویس')),
+            link: escapeHtml(String(order.link || '-')),
+            quantity: order.quantity || 'پکیج',
+            charge: chargeFormatted,
+            status: statusPersian,
             date,
-            order.api_provider_order_id
-        ),
-        { parse_mode: 'HTML', reply_markup: orderDetailKeyboard() }
+        }),
+        {
+            parse_mode: 'HTML',
+            reply_markup: orderDetailInlineKeyboard(orderId),
+        }
     );
     return true;
+}
+
+/**
+ * Callback: `repeat_order:{orderId}`
+ * Validates ownership + that the service (and its category) are still active,
+ * then jumps into the order flow at `enter_link` (after service selection).
+ */
+export async function handleRepeatOrderCallback(ctx: any, db: D1Database, userId: number, data: string) {
+    const match = data.match(/^repeat_order:(\d+)$/);
+    if (!match) {
+        await ctx.answerCallbackQuery({ text: 'درخواست نامعتبر است', show_alert: true });
+        return;
+    }
+
+    const orderId = parseInt(match[1], 10);
+    if (!Number.isFinite(orderId) || orderId <= 0) {
+        await ctx.answerCallbackQuery({ text: 'شناسه سفارش نامعتبر است', show_alert: true });
+        return;
+    }
+
+    Order.use(db);
+    const order = await Order.findUserOrderById(userId, orderId) as any;
+    if (!order) {
+        await ctx.answerCallbackQuery({ text: MESSAGES.ORDER_NOT_FOUND, show_alert: true });
+        return;
+    }
+
+    const serviceId = Number(order.service_id);
+    if (!Number.isFinite(serviceId) || serviceId <= 0) {
+        await ctx.answerCallbackQuery({ text: 'سرویس این سفارش یافت نشد', show_alert: true });
+        return;
+    }
+
+    Service.use(db);
+    const service = await Service.findActiveOrderable(serviceId);
+    if (!service || !service.id) {
+        await ctx.answerCallbackQuery({ text: 'سرویس غیرفعال است', show_alert: true });
+        await ctx.reply(MESSAGES.REPEAT_SERVICE_UNAVAILABLE, {
+            reply_markup: await mainMenuKeyboard(db, userId),
+        });
+        await clearFlowSession(db, userId, BOT_FLOWS.MY_ORDERS);
+        return;
+    }
+
+    await ctx.answerCallbackQuery({ text: 'در حال آماده‌سازی تکرار سفارش…' });
+    await clearFlowSession(db, userId, BOT_FLOWS.MY_ORDERS);
+
+    await promptEnterLinkAfterService(
+        ctx,
+        db,
+        userId,
+        {
+            categoryId: service.category_id,
+            categoryName: service.category_name,
+            categoryPage: 0,
+            servicePage: 0,
+        },
+        {
+            id: service.id,
+            name: service.name,
+            type: service.type,
+            description: service.description,
+            rate: service.rate,
+            min: service.min,
+            max: service.max,
+            category_id: service.category_id,
+            category_name: service.category_name,
+        },
+        { exclusive: true }
+    );
+}
+
+/** Inline «بازگشت به لیست» from order detail. */
+export async function handleMyOrdersBackCallback(ctx: any, db: D1Database, userId: number) {
+    await ctx.answerCallbackQuery();
+    await handleMyOrdersBack(ctx, db, userId);
 }
 
 export async function handleMyOrdersBack(ctx: any, db: D1Database, userId: number) {
