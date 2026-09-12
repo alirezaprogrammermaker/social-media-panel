@@ -167,6 +167,17 @@ pnpm deploy
 
 `CRYPTO_GATEWAY_BASE_URL` defaults to `https://crypto-gateway.social-panel.workers.dev` via `wrangler.jsonc` `vars` (or override in dashboard Settings).
 
+### Admin Agent API (Bearer token)
+
+Scriptable JSON API under `/api/agent` for external automation agents (manage dollar rate, look up provider services, link services with markup). Auth uses the `ADMIN_API_TOKEN` secret:
+
+```bash
+wrangler secret put ADMIN_API_TOKEN   # production
+# local dev: add ADMIN_API_TOKEN=... to .dev.vars
+```
+
+Full curl examples: [docs/AGENT_API.md](docs/AGENT_API.md). Cookie sessions for the React dashboard are unaffected.
+
 ### Set up Telegram Bot
 
 1. Go to dashboard → **Settings** → **Telegram Bot**

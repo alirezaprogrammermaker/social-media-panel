@@ -4,6 +4,7 @@ import telegramBot from './telegram';
 import dashboardRoutes from './routes/dashboard';
 import aiRoutes from './routes/ai';
 import smmRoutes from './routes/smm';
+import agentRoutes from './routes/agent';
 import cryptoGatewayRoutes from './routes/cryptoGateway';
 import { checkOrderStatuses } from './cron/orderStatusChecker';
 import { syncServicesFromProviders, syncProviderBalance } from './cron/serviceChecker';
@@ -19,6 +20,7 @@ app.route('/api/telegram', telegramBot);
 app.route('/api/dashboard', dashboardRoutes);
 app.route('/api/ai', aiRoutes);
 app.route('/api/smm', smmRoutes);
+app.route('/api/agent', agentRoutes);
 app.route('/api/crypto-gateway', cryptoGatewayRoutes);
 
 function getTehranHourMinute(date: Date): { hour: number; minute: number } {
