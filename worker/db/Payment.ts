@@ -1,5 +1,5 @@
 import { Model } from './Model';
-import { nowTehran } from '../utils/date';
+import { dateRangeSql, nowTehran } from '../utils/date';
 import type { PaginatedResult } from '../utils/pagination';
 import { paginatedResult } from '../utils/pagination';
 
@@ -82,6 +82,61 @@ export class Payment extends Model<PaymentRow> {
         const total = countRow?.count ?? 0;
         const data = await this.raw<PaymentRow>(
             `SELECT * FROM ${this.table} ${whereSql} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+            ...params,
+            pageSize,
+            offset
+        );
+        return paginatedResult(data, total, page, pageSize);
+    }
+
+    /**
+     * Filtered + paginated list for the Agent API.
+     * Same row shape as listPaginated, but adds a created_at date range and user_chat_id filter.
+     */
+    static async listFilteredPaginated(
+        page: number,
+        pageSize: number,
+        filters?: {
+            status?: string | null;
+            type?: string | null;
+            /** Inclusive created_at lower bound — 'YYYY-MM-DD' (whole day) or 'YYYY-MM-DDTHH:MM:SS', Tehran-local. */
+            from?: string | null;
+            /** Inclusive created_at upper bound — same formats as `from`. */
+            to?: string | null;
+            userChatId?: number | null;
+        }
+    ): Promise<PaginatedResult<PaymentRow>> {
+        const offset = (page - 1) * pageSize;
+        const where: string[] = [];
+        const params: any[] = [];
+
+        if (filters?.status) {
+            where.push('status = ?');
+            params.push(filters.status);
+        }
+        if (filters?.type === 'crypto') {
+            where.push("payment_type = 'crypto'");
+        } else if (filters?.type === 'card') {
+            where.push("(payment_type IS NULL OR payment_type = '' OR payment_type = 'card')");
+        }
+        const range = dateRangeSql('created_at', filters?.from ?? null, filters?.to ?? null);
+        if (range.sql) {
+            where.push(range.sql);
+            params.push(...range.params);
+        }
+        if (filters?.userChatId !== null && filters?.userChatId !== undefined) {
+            where.push('user_chat_id = ?');
+            params.push(filters.userChatId);
+        }
+
+        const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+        const countRow = await this.rawFirst<{ count: number }>(
+            `SELECT COUNT(*) as count FROM ${this.table} ${whereSql}`,
+            ...params
+        );
+        const total = countRow?.count ?? 0;
+        const data = await this.raw<PaymentRow>(
+            `SELECT * FROM ${this.table} ${whereSql} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`,
             ...params,
             pageSize,
             offset

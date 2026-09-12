@@ -1,11 +1,19 @@
 import { Hono } from 'hono';
+import { Api } from 'grammy';
 import { ApiProvider } from '../db/ApiProvider';
 import { Category } from '../db/Category';
 import type { CategoryData } from '../db/Category';
 import { Service } from '../db/Service';
+import { Order } from '../db/Order';
+import type { OrderStatus } from '../db/Order';
+import { Payment } from '../db/Payment';
+import { TelegramUser } from '../db/TelegramUser';
 import { Setting } from '../db/Setting';
 import { SmmApiProvider } from '../api/SmmApiProvider';
 import type { SmmService } from '../api/SmmApiProvider';
+import { applyOrderRefund, checkOrderStatuses, notifyCustomerOrderStatus } from '../cron/orderStatusChecker';
+import { dateRangeSql, dateTehran, normalizeRangeDate } from '../utils/date';
+import { parsePagination } from '../utils/pagination';
 import { usdToToman } from '../utils/pricing';
 import { requireAuth, requireAdmin } from '../middleware';
 import type { Bindings, Variables } from '../types';
@@ -38,6 +46,24 @@ function parsePositiveInt(value: string | number | null | undefined): number | n
     if (value === undefined || value === null || value === '') return null;
     const n = Number(value);
     return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+/** Any integer — chat ids from Telegram can be negative (groups/channels). */
+function parseInteger(value: string | number | null | undefined): number | null {
+    if (value === undefined || value === null || value === '') return null;
+    const n = Number(value);
+    return Number.isInteger(n) ? n : null;
+}
+
+const RANGE_PARAM_HINT = 'from/to باید به فرمت YYYY-MM-DD یا YYYY-MM-DDTHH:MM باشد';
+
+/** Read optional JSON body without failing on empty/invalid JSON. */
+async function readJson(c: any): Promise<any> {
+    try {
+        return (await c.req.json()) ?? {};
+    } catch {
+        return {};
+    }
 }
 
 function parseNumber(value: string | number | null | undefined): number | null {
@@ -524,6 +550,622 @@ agent.post('/services/:id/reprice', async (c) => {
         return c.json({ ok: true, service: updated, pricing });
     } catch (e: any) {
         return c.json({ error: e?.message || 'خطا در محاسبه مجدد قیمت' }, 500);
+    }
+});
+
+// --- Orders (operational) ---
+
+const VALID_ORDER_STATUSES = ['Pending', 'In progress', 'Completed', 'Partial', 'Processing', 'Canceled'];
+
+agent.get('/orders', async (c) => {
+    try {
+        const from = normalizeRangeDate(c.req.query('from'));
+        const to = normalizeRangeDate(c.req.query('to'));
+        if (from === null || to === null) return c.json({ error: RANGE_PARAM_HINT }, 400);
+
+        const userChatId = parseInteger(c.req.query('user_chat_id'));
+        if (c.req.query('user_chat_id') && userChatId === null) {
+            return c.json({ error: 'user_chat_id نامعتبر است' }, 400);
+        }
+        const serviceId = parsePositiveInt(c.req.query('service_id'));
+        if (c.req.query('service_id') && serviceId === null) {
+            return c.json({ error: 'service_id نامعتبر است' }, 400);
+        }
+        const providerId = parsePositiveInt(c.req.query('provider_id'));
+        if (c.req.query('provider_id') && providerId === null) {
+            return c.json({ error: 'provider_id نامعتبر است' }, 400);
+        }
+
+        const { page, pageSize } = parsePagination(
+            { page: c.req.query('page'), pageSize: c.req.query('pageSize') },
+            { pageSize: 20, maxPageSize: 100 }
+        );
+
+        Order.use(c.env.DB);
+        const result = await Order.getOrdersFilteredPaginated(page, pageSize, {
+            status: c.req.query('status')?.trim() || null,
+            from: from ?? null,
+            to: to ?? null,
+            userChatId,
+            serviceId,
+            providerId,
+            q: c.req.query('q')?.trim() || null,
+        });
+        return c.json({
+            ok: true,
+            total: result.total,
+            page: result.page,
+            pageSize: result.pageSize,
+            orders: result.data,
+        });
+    } catch (e: any) {
+        return c.json({ error: e?.message || 'خطا در دریافت سفارشات' }, 500);
+    }
+});
+
+agent.get('/orders/:id', async (c) => {
+    try {
+        const id = parsePositiveInt(c.req.param('id'));
+        if (id === null) return c.json({ error: 'شناسه سفارش نامعتبر است' }, 400);
+
+        Order.use(c.env.DB);
+        const order = await Order.findDetailById(id);
+        if (!order) return c.json({ error: 'سفارش یافت نشد' }, 404);
+        return c.json({ ok: true, order });
+    } catch (e: any) {
+        return c.json({ error: e?.message || 'خطا در دریافت سفارش' }, 500);
+    }
+});
+
+agent.put('/orders/:id/status', async (c) => {
+    try {
+        const id = parsePositiveInt(c.req.param('id'));
+        if (id === null) return c.json({ error: 'شناسه سفارش نامعتبر است' }, 400);
+
+        const body = await readJson(c);
+        const status = body?.status;
+        if (!VALID_ORDER_STATUSES.includes(status)) {
+            return c.json({ error: 'وضعیت نامعتبر است' }, 400);
+        }
+
+        Order.use(c.env.DB);
+        const order = await Order.find(String(id)) as any;
+        if (!order) return c.json({ error: 'سفارش یافت نشد' }, 404);
+
+        const prevStatus = order.status;
+        if (status === prevStatus) {
+            return c.json({ ok: true, unchanged: true });
+        }
+
+        if (status === 'Canceled' || status === 'Partial') {
+            const refunded = await applyOrderRefund(c.env.DB, order, status as OrderStatus);
+            if (refunded > 0) {
+                return c.json({ ok: true, refunded });
+            }
+        }
+
+        await Order.updateStatus(id, status as OrderStatus);
+        if (status === 'Completed' || status === 'Partial' || status === 'Canceled') {
+            await notifyCustomerOrderStatus(c.env.DB, order, status as OrderStatus);
+        }
+        return c.json({ ok: true });
+    } catch (e: any) {
+        return c.json({ error: e?.message || 'خطا در بروزرسانی وضعیت' }, 500);
+    }
+});
+
+agent.put('/orders/:id/cancel', async (c) => {
+    try {
+        const id = parsePositiveInt(c.req.param('id'));
+        if (id === null) return c.json({ error: 'شناسه سفارش نامعتبر است' }, 400);
+
+        Order.use(c.env.DB);
+        const order = await Order.find(String(id)) as any;
+        if (!order) return c.json({ error: 'سفارش یافت نشد' }, 404);
+
+        if (order.status === 'Canceled') {
+            return c.json({ ok: true, already: true });
+        }
+
+        if (order.api_provider_id && order.api_provider_order_id) {
+            ApiProvider.use(c.env.DB);
+            const provider = await ApiProvider.find(String(order.api_provider_id)) as any;
+            if (provider) {
+                const api = new SmmApiProvider({
+                    apiUrl: provider.api_url,
+                    apiKey: provider.api_key,
+                });
+                try {
+                    await api.cancel([order.api_provider_order_id]);
+                } catch (cancelError: any) {
+                    console.error('Provider cancel failed:', cancelError?.message);
+                }
+            }
+        }
+
+        const refunded = await applyOrderRefund(c.env.DB, order, 'Canceled');
+        if (refunded <= 0) {
+            await Order.updateStatus(id, 'Canceled');
+            await notifyCustomerOrderStatus(c.env.DB, order, 'Canceled');
+        }
+        return c.json({ ok: true, refunded });
+    } catch (e: any) {
+        return c.json({ error: e?.message || 'خطا در لغو سفارش' }, 500);
+    }
+});
+
+agent.post('/orders/check-status', async (c) => {
+    try {
+        const body = await readJson(c);
+
+        // Optional targeting: { "id": 1 } or { "ids": [1,2,3] }. Without them, sweep like the dashboard.
+        let ids: number[] | undefined;
+        if (body?.id !== undefined || body?.ids !== undefined) {
+            const rawIds: unknown[] = Array.isArray(body.ids)
+                ? body.ids
+                : body.id !== undefined
+                    ? [body.id]
+                    : [];
+            if (rawIds.length === 0) {
+                return c.json({ error: 'ids باید آرایه‌ای از شناسه سفارش باشد' }, 400);
+            }
+            ids = rawIds.map((v) => Number(v));
+            if (ids.some((n) => !Number.isInteger(n) || n <= 0)) {
+                return c.json({ error: 'شناسه‌های سفارش نامعتبر است' }, 400);
+            }
+            ids = ids.slice(0, 500);
+        }
+
+        const result = ids
+            ? await checkOrderStatuses(c.env.DB, { ids, advanceCursor: false })
+            : await checkOrderStatuses(c.env.DB, { limit: 500, advanceCursor: true });
+        return c.json({ ok: true, ...result });
+    } catch (e: any) {
+        return c.json({ error: e?.message || 'خطا در بررسی وضعیت سفارشات' }, 500);
+    }
+});
+
+agent.post('/orders/:id/refill', async (c) => {
+    try {
+        const id = parsePositiveInt(c.req.param('id'));
+        if (id === null) return c.json({ error: 'شناسه سفارش نامعتبر است' }, 400);
+
+        Order.use(c.env.DB);
+        const order = await Order.find(String(id)) as any;
+        if (!order) return c.json({ error: 'سفارش یافت نشد' }, 404);
+
+        if (!order.api_provider_id || !order.api_provider_order_id) {
+            return c.json({ error: 'این سفارش به ارائه‌دهنده‌ای متصل نیست' }, 400);
+        }
+
+        ApiProvider.use(c.env.DB);
+        const provider = await ApiProvider.find(String(order.api_provider_id)) as any;
+        if (!provider) return c.json({ error: 'ارائه‌دهنده یافت نشد' }, 404);
+
+        const api = new SmmApiProvider({ apiUrl: provider.api_url, apiKey: provider.api_key });
+        const result = await api.refill(Number(order.api_provider_order_id));
+        if (result && typeof result.refill === 'object' && result.refill !== null && 'error' in (result.refill as any)) {
+            return c.json({ error: `خطای refill از ارائه‌دهنده: ${(result.refill as any).error}` }, 400);
+        }
+        return c.json({ ok: true, refill: result?.refill ?? null });
+    } catch (e: any) {
+        return c.json({ error: e?.message || 'خطا در درخواست refill' }, 500);
+    }
+});
+
+// --- Payments ---
+
+agent.get('/payments', async (c) => {
+    try {
+        const from = normalizeRangeDate(c.req.query('from'));
+        const to = normalizeRangeDate(c.req.query('to'));
+        if (from === null || to === null) return c.json({ error: RANGE_PARAM_HINT }, 400);
+
+        const userChatId = parseInteger(c.req.query('user_chat_id'));
+        if (c.req.query('user_chat_id') && userChatId === null) {
+            return c.json({ error: 'user_chat_id نامعتبر است' }, 400);
+        }
+
+        const { page, pageSize } = parsePagination(
+            { page: c.req.query('page'), pageSize: c.req.query('pageSize') },
+            { pageSize: 20, maxPageSize: 100 }
+        );
+
+        Payment.use(c.env.DB);
+        const result = await Payment.listFilteredPaginated(page, pageSize, {
+            status: c.req.query('status')?.trim() || null,
+            type: c.req.query('type')?.trim() || null,
+            from: from ?? null,
+            to: to ?? null,
+            userChatId,
+        });
+        return c.json({
+            ok: true,
+            total: result.total,
+            page: result.page,
+            pageSize: result.pageSize,
+            payments: result.data,
+        });
+    } catch (e: any) {
+        return c.json({ error: e?.message || 'خطا در دریافت پرداخت‌ها' }, 500);
+    }
+});
+
+agent.get('/payments/:id', async (c) => {
+    try {
+        const id = parsePositiveInt(c.req.param('id'));
+        if (id === null) return c.json({ error: 'شناسه پرداخت نامعتبر است' }, 400);
+
+        Payment.use(c.env.DB);
+        const payment = await Payment.find(String(id)) as any;
+        if (!payment) return c.json({ error: 'پرداخت یافت نشد' }, 404);
+
+        // receipt_image_url stores the Telegram file id — expose it under an explicit name;
+        // the bytes themselves stay behind GET /api/dashboard/payments/receipt/:fileId.
+        return c.json({
+            ok: true,
+            payment: {
+                ...payment,
+                receipt_file_id: payment.receipt_image_url ?? null,
+            },
+        });
+    } catch (e: any) {
+        return c.json({ error: e?.message || 'خطا در دریافت پرداخت' }, 500);
+    }
+});
+
+agent.put('/payments/:id/approve', async (c) => {
+    try {
+        const id = parsePositiveInt(c.req.param('id'));
+        if (id === null) return c.json({ error: 'شناسه پرداخت نامعتبر است' }, 400);
+
+        Payment.use(c.env.DB);
+        const payment = await Payment.find(String(id)) as any;
+        if (!payment) return c.json({ error: 'پرداخت یافت نشد' }, 404);
+
+        const approved = await Payment.approveAndCredit(id, payment.user_chat_id, payment.amount);
+        if (!approved) {
+            return c.json({ error: 'این پرداخت قبلا بررسی شده یا کاربر یافت نشد' }, 400);
+        }
+
+        // Notify user via Telegram (same as dashboard approve)
+        Setting.use(c.env.DB);
+        const token = await Setting.get('telegram_token');
+        if (token) {
+            const api = new Api(token);
+            try {
+                await api.sendMessage(
+                    payment.user_chat_id,
+                    `✅ پرداخت شما تایید شد!\n\nمبلغ: ${payment.amount.toLocaleString()} تومان\nموجودی جدید شما بروزرسانی شد.`,
+                );
+            } catch {}
+        }
+
+        return c.json({ ok: true });
+    } catch (e: any) {
+        return c.json({ error: e?.message || 'خطا در تایید پرداخت' }, 500);
+    }
+});
+
+agent.put('/payments/:id/reject', async (c) => {
+    try {
+        const id = parsePositiveInt(c.req.param('id'));
+        if (id === null) return c.json({ error: 'شناسه پرداخت نامعتبر است' }, 400);
+
+        const body = await readJson(c);
+        const reason = typeof body?.reason === 'string' ? body.reason.trim() : undefined;
+
+        Payment.use(c.env.DB);
+        const payment = await Payment.find(String(id)) as any;
+        if (!payment) return c.json({ error: 'پرداخت یافت نشد' }, 404);
+
+        const rejected = await Payment.updatePendingStatus(id, 'rejected', reason);
+        if (!rejected) return c.json({ error: 'این پرداخت قبلا بررسی شده' }, 400);
+
+        // Notify user via Telegram (same as dashboard reject)
+        Setting.use(c.env.DB);
+        const token = await Setting.get('telegram_token');
+        if (token) {
+            const api = new Api(token);
+            try {
+                await api.sendMessage(
+                    payment.user_chat_id,
+                    `❌ پرداخت شما رد شد.\n\nمبلغ: ${payment.amount.toLocaleString()} تومان${reason ? `\nدلیل: ${reason}` : ''}`,
+                );
+            } catch {}
+        }
+
+        return c.json({ ok: true });
+    } catch (e: any) {
+        return c.json({ error: e?.message || 'خطا در رد پرداخت' }, 500);
+    }
+});
+
+// --- Telegram users ---
+
+agent.get('/users', async (c) => {
+    try {
+        const { page, pageSize } = parsePagination(
+            { page: c.req.query('page'), pageSize: c.req.query('pageSize') },
+            { pageSize: 20, maxPageSize: 100 }
+        );
+        const blockedRaw = c.req.query('blocked');
+        const blocked = blockedRaw === 'true' || blockedRaw === '1'
+            ? true
+            : blockedRaw === 'false' || blockedRaw === '0'
+                ? false
+                : null;
+
+        TelegramUser.use(c.env.DB);
+        const result = await TelegramUser.listFilteredPaginated(page, pageSize, {
+            q: c.req.query('q')?.trim() || null,
+            blocked,
+        });
+        return c.json({
+            ok: true,
+            total: result.total,
+            page: result.page,
+            pageSize: result.pageSize,
+            users: result.data,
+        });
+    } catch (e: any) {
+        return c.json({ error: e?.message || 'خطا در دریافت کاربران' }, 500);
+    }
+});
+
+agent.get('/users/:chatId', async (c) => {
+    try {
+        const chatId = parseInteger(c.req.param('chatId'));
+        if (chatId === null) return c.json({ error: 'chat_id نامعتبر است' }, 400);
+
+        TelegramUser.use(c.env.DB);
+        const user = await TelegramUser.findByChatId(chatId);
+        if (!user) return c.json({ error: 'کاربر یافت نشد' }, 404);
+
+        Order.use(c.env.DB);
+        Payment.use(c.env.DB);
+        const [ordersCount, paymentsCount] = await Promise.all([
+            Order.countUserOrders(chatId),
+            Payment.rawFirst<{ count: number }>(
+                'SELECT COUNT(*) as count FROM payments WHERE user_chat_id = ?',
+                chatId
+            ),
+        ]);
+
+        return c.json({
+            ok: true,
+            user,
+            stats: {
+                orders_count: ordersCount,
+                payments_count: paymentsCount?.count ?? 0,
+            },
+        });
+    } catch (e: any) {
+        return c.json({ error: e?.message || 'خطا در دریافت کاربر' }, 500);
+    }
+});
+
+agent.post('/users/:chatId/message', async (c) => {
+    try {
+        const chatId = parseInteger(c.req.param('chatId'));
+        if (chatId === null) return c.json({ error: 'chat_id نامعتبر است' }, 400);
+
+        const { text, parse_mode } = await readJson(c);
+        if (!text || typeof text !== 'string' || text.trim().length === 0) {
+            return c.json({ error: 'متن پیام الزامی است' }, 400);
+        }
+        if (text.length > 4000) {
+            return c.json({ error: 'متن پیام حداکثر ۴۰۰۰ کاراکتر است' }, 400);
+        }
+
+        TelegramUser.use(c.env.DB);
+        const user = await TelegramUser.findByChatId(chatId);
+        if (!user) return c.json({ error: 'کاربر یافت نشد' }, 404);
+
+        Setting.use(c.env.DB);
+        const token = await Setting.get('telegram_token');
+        if (!token) return c.json({ error: 'توکن تنظیم نشده' }, 400);
+
+        const api = new Api(token);
+        try {
+            const options: Record<string, any> = {};
+            if (parse_mode) options.parse_mode = parse_mode;
+            await api.sendMessage(chatId, text, options);
+            return c.json({ ok: true });
+        } catch (error: any) {
+            return c.json({ error: error?.message || 'خطا در ارسال پیام' }, 500);
+        }
+    } catch (e: any) {
+        return c.json({ error: e?.message || 'خطا در ارسال پیام' }, 500);
+    }
+});
+
+agent.put('/users/:chatId/balance', async (c) => {
+    try {
+        const chatId = parseInteger(c.req.param('chatId'));
+        if (chatId === null) return c.json({ error: 'chat_id نامعتبر است' }, 400);
+
+        const body = await readJson(c);
+        const hasSet = body?.set !== undefined;
+        const hasDelta = body?.delta !== undefined;
+        if (hasSet === hasDelta) {
+            return c.json({ error: 'دقیقا یکی از set یا delta را بفرستید' }, 400);
+        }
+
+        const set = hasSet ? Number(body.set) : null;
+        const delta = hasDelta ? Number(body.delta) : null;
+        if (hasSet && (!Number.isFinite(set) || (set as number) < 0)) {
+            return c.json({ error: 'set باید عددی >= 0 باشد' }, 400);
+        }
+        if (hasDelta && !Number.isFinite(delta)) {
+            return c.json({ error: 'delta باید عدد باشد' }, 400);
+        }
+
+        TelegramUser.use(c.env.DB);
+        const user = await TelegramUser.findByChatId(chatId);
+        if (!user) return c.json({ error: 'کاربر یافت نشد' }, 404);
+
+        if (hasSet) {
+            await TelegramUser.setBalanceByChatId(chatId, set as number);
+        } else {
+            const adjusted = await TelegramUser.adjustBalanceGuarded(chatId, delta as number);
+            if (!adjusted) {
+                return c.json({ error: 'این تغییر موجودی، موجودی را منفی می‌کند؛ مجاز نیست' }, 400);
+            }
+        }
+
+        const updated = await TelegramUser.findByChatId(chatId);
+        return c.json({ ok: true, balance: (updated as any)?.balance ?? null });
+    } catch (e: any) {
+        return c.json({ error: e?.message || 'خطا در بروزرسانی موجودی' }, 500);
+    }
+});
+
+agent.put('/users/:chatId/block', async (c) => {
+    try {
+        const chatId = parseInteger(c.req.param('chatId'));
+        if (chatId === null) return c.json({ error: 'chat_id نامعتبر است' }, 400);
+
+        const body = await readJson(c);
+        TelegramUser.use(c.env.DB);
+        const user = await TelegramUser.findByChatId(chatId);
+        if (!user) return c.json({ error: 'کاربر یافت نشد' }, 404);
+
+        await TelegramUser.blockByChatId(chatId, body?.reason, body?.duration_minutes);
+        return c.json({ ok: true });
+    } catch (e: any) {
+        return c.json({ error: e?.message || 'خطا در مسدودسازی کاربر' }, 500);
+    }
+});
+
+agent.put('/users/:chatId/unblock', async (c) => {
+    try {
+        const chatId = parseInteger(c.req.param('chatId'));
+        if (chatId === null) return c.json({ error: 'chat_id نامعتبر است' }, 400);
+
+        TelegramUser.use(c.env.DB);
+        const user = await TelegramUser.findByChatId(chatId);
+        if (!user) return c.json({ error: 'کاربر یافت نشد' }, 404);
+
+        await TelegramUser.unblockByChatId(chatId);
+        return c.json({ ok: true });
+    } catch (e: any) {
+        return c.json({ error: e?.message || 'خطا در رفع مسدودی کاربر' }, 500);
+    }
+});
+
+// --- Ops stats snapshot ---
+
+agent.get('/stats', async (c) => {
+    try {
+        const from = normalizeRangeDate(c.req.query('from'));
+        const to = normalizeRangeDate(c.req.query('to'));
+        if (from === null || to === null) return c.json({ error: RANGE_PARAM_HINT }, 400);
+
+        // Default range: today (Tehran). Bounds are independent — each falls back to today.
+        const today = dateTehran();
+        const rangeFrom = from ?? today;
+        const rangeTo = to ?? today;
+        if (rangeFrom.slice(0, 10) > rangeTo.slice(0, 10)) {
+            return c.json({ error: 'from نمی‌تواند بعد از to باشد' }, 400);
+        }
+
+        Order.use(c.env.DB);
+        Payment.use(c.env.DB);
+        TelegramUser.use(c.env.DB);
+        Service.use(c.env.DB);
+        Category.use(c.env.DB);
+        ApiProvider.use(c.env.DB);
+
+        // Orders in range
+        const orderRange = dateRangeSql('created_at', rangeFrom, rangeTo);
+        const orderConds = orderRange.sql ? [orderRange.sql] : [];
+        const orderWhere = orderConds.length ? `WHERE ${orderConds.join(' AND ')}` : '';
+        const orderAgg = await Order.rawFirst<any>(
+            `SELECT COUNT(*) as count, COALESCE(SUM(CAST(charge AS REAL)), 0) as gross
+             FROM orders ${orderWhere}`,
+            ...orderRange.params
+        );
+        const byStatusRows = await Order.raw<{ status: string; count: number }>(
+            `SELECT status, COUNT(*) as count FROM orders ${orderWhere} GROUP BY status`,
+            ...orderRange.params
+        );
+        const completedConds = [...orderConds, "status = 'Completed'"];
+        const completedAgg = await Order.rawFirst<any>(
+            `SELECT COALESCE(SUM(CAST(charge AS REAL)), 0) as total
+             FROM orders WHERE ${completedConds.join(' AND ')}`,
+            ...orderRange.params
+        );
+        const byStatus: Record<string, number> = {};
+        for (const row of byStatusRows) {
+            byStatus[row.status] = row.count;
+        }
+
+        // Payments in range
+        const paymentRange = dateRangeSql('created_at', rangeFrom, rangeTo);
+        const paymentWhere = paymentRange.sql ? `WHERE ${paymentRange.sql}` : '';
+        const paymentAgg = await Payment.rawFirst<any>(
+            `SELECT COUNT(*) as count,
+                    COALESCE(SUM(CASE WHEN status = 'approved' THEN amount ELSE 0 END), 0) as approved_amount,
+                    COALESCE(SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END), 0) as approved_count,
+                    COALESCE(SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END), 0) as pending_count,
+                    COALESCE(SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END), 0) as rejected_count
+             FROM payments ${paymentWhere}`,
+            ...paymentRange.params
+        );
+
+        // Users: total + created in range
+        const usersTotal = await TelegramUser.count();
+        const userRange = dateRangeSql('created_at', rangeFrom, rangeTo);
+        const newUsers = (await TelegramUser.rawFirst<{ count: number }>(
+            `SELECT COUNT(*) as count FROM telegram_users ${userRange.sql ? `WHERE ${userRange.sql}` : ''}`,
+            ...userRange.params
+        ))?.count ?? 0;
+
+        // Catalog
+        const activeServices = (await Service.rawFirst<{ count: number }>(
+            'SELECT COUNT(*) as count FROM services WHERE is_active = 1'
+        ))?.count ?? 0;
+        const categoriesCount = await Category.count();
+
+        // Providers (balance as last synced; never returns api_key)
+        const providers = await ApiProvider.all<any>();
+        const providerList = providers.map((p) => ({
+            id: p.id,
+            name: p.name,
+            balance: p.balance ?? null,
+            currency: p.currency ?? null,
+            is_active: p.is_active === 1,
+        }));
+
+        return c.json({
+            ok: true,
+            range: { from: rangeFrom, to: rangeTo },
+            orders: {
+                count: orderAgg?.count ?? 0,
+                by_status: byStatus,
+                revenue_toman: Math.round(Number(orderAgg?.gross ?? 0)),
+                completed_charge_toman: Math.round(Number(completedAgg?.total ?? 0)),
+            },
+            payments: {
+                count: paymentAgg?.count ?? 0,
+                approved_count: paymentAgg?.approved_count ?? 0,
+                approved_toman: Math.round(Number(paymentAgg?.approved_amount ?? 0)),
+                pending_count: paymentAgg?.pending_count ?? 0,
+                rejected_count: paymentAgg?.rejected_count ?? 0,
+            },
+            users: {
+                total: usersTotal,
+                new_in_range: newUsers,
+            },
+            catalog: {
+                active_services: activeServices,
+                categories: categoriesCount,
+            },
+            providers: providerList,
+        });
+    } catch (e: any) {
+        return c.json({ error: e?.message || 'خطا در دریافت آمار' }, 500);
     }
 });
 

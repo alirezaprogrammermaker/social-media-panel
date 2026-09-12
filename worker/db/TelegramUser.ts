@@ -40,6 +40,46 @@ export class TelegramUser extends Model<TelegramUserRow> {
         return this.findBy('chat_id', chatId);
     }
 
+    /**
+     * Filtered + paginated list for the Agent API.
+     * `q` searches username / first_name / chat_id; `blocked` filters on the blocked flag.
+     */
+    static async listFilteredPaginated(
+        this: any,
+        page: number,
+        pageSize: number,
+        filters?: { q?: string | null; blocked?: boolean | null }
+    ): Promise<PaginatedResult<TelegramUserRow>> {
+        const offset = (page - 1) * pageSize;
+        const where: string[] = [];
+        const params: any[] = [];
+
+        if (filters?.q) {
+            const like = `%${filters.q.trim()}%`;
+            where.push('(username LIKE ? OR first_name LIKE ? OR CAST(chat_id AS TEXT) LIKE ?)');
+            params.push(like, like, like);
+        }
+        if (filters?.blocked === true) {
+            where.push('blocked = 1');
+        } else if (filters?.blocked === false) {
+            where.push('blocked = 0');
+        }
+
+        const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+        const countRow = (await this.rawFirst(
+            `SELECT COUNT(*) as count FROM ${this.table} ${whereSql}`,
+            ...params
+        )) as { count: number } | null;
+        const total = countRow?.count ?? 0;
+        const data = (await this.raw(
+            `SELECT * FROM ${this.table} ${whereSql} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`,
+            ...params,
+            pageSize,
+            offset
+        )) as TelegramUserRow[];
+        return paginatedResult(data, total, page, pageSize);
+    }
+
     static async deleteByChatId(this: any, chatId: number): Promise<void> {
         const row = await this.findBy('chat_id', chatId);
         if (row) await this.delete(row.id);
@@ -176,6 +216,31 @@ export class TelegramUser extends Model<TelegramUserRow> {
             nowTehran(),
             chatId
         );
+    }
+
+    /** Overwrite a user's balance (already validated >= 0 by the caller). */
+    static async setBalanceByChatId(this: any, chatId: number, amount: number): Promise<void> {
+        await this.raw(
+            'UPDATE telegram_users SET balance = ?, updated_at = ? WHERE chat_id = ?',
+            amount,
+            nowTehran(),
+            chatId
+        );
+    }
+
+    /**
+     * Add a signed delta atomically, refusing to push the balance below zero.
+     * Returns false when the guard rejected the update (or user not found).
+     */
+    static async adjustBalanceGuarded(this: any, chatId: number, delta: number): Promise<boolean> {
+        const result = await this.db
+            .prepare(
+                `UPDATE ${this.table} SET balance = balance + ?, updated_at = ?
+                 WHERE chat_id = ? AND balance + ? >= 0`
+            )
+            .bind(delta, nowTehran(), chatId, delta)
+            .run();
+        return (result.meta?.changes ?? 0) > 0;
     }
 
     static async getRecent(limit: number = 5): Promise<any[]> {

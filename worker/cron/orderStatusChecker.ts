@@ -1,5 +1,5 @@
 import { Order } from '../db/Order';
-import type { OrderStatus } from '../db/Order';
+import type { OrderStatus, PendingApiOrder } from '../db/Order';
 import { ApiProvider } from '../db/ApiProvider';
 import { TelegramUser } from '../db/TelegramUser';
 import { Setting } from '../db/Setting';
@@ -16,6 +16,8 @@ interface CheckResult {
     batchSize: number;
     cursorBefore: number;
     cursorAfter: number;
+    /** Targeted mode only: requested ids that were skipped (not found / closed / not provider-linked). */
+    skippedIds?: number[];
 }
 
 export interface CheckOrderStatusesOptions {
@@ -23,6 +25,8 @@ export interface CheckOrderStatusesOptions {
     limit?: number;
     /** Persist keyset cursor so subsequent runs continue fairly. Default true. */
     advanceCursor?: boolean;
+    /** Targeted mode: only check these local order ids (capped at 500). Disables cursor + orphan sweep. */
+    ids?: number[];
 }
 
 const TERMINAL_REFUND_STATUSES: OrderStatus[] = ['Canceled', 'Partial'];
@@ -42,40 +46,84 @@ export async function checkOrderStatuses(
     const limit = Math.min(Math.max(1, options.limit ?? DEFAULT_CRON_LIMIT), 500);
     const advanceCursor = options.advanceCursor !== false;
 
+    // Targeted mode: check specific ids only (Agent API). Same filters as the keyset page,
+    // but no cursor handling and no orphan-recovery sweep.
+    const requestedIds = options.ids && options.ids.length > 0
+        ? [...new Set(options.ids.map((n) => Math.floor(Number(n))).filter((n) => Number.isInteger(n) && n > 0))].slice(0, 500)
+        : null;
+    const targeted = requestedIds !== null;
+
     const errors: string[] = [];
     let checked = 0;
     let updated = 0;
     let refunded = 0;
 
     // Recover orders charged locally but never submitted (legacy silent provider failures)
-    const orphaned = await Order.raw<any>(
-        `SELECT * FROM orders
-         WHERE status IN ('Pending', 'Processing')
-           AND api_provider_id IS NOT NULL
-           AND api_provider_order_id IS NULL
-           AND CAST(charge AS REAL) > 0
-         LIMIT 50`
-    );
-    for (const order of orphaned) {
-        try {
-            const amount = await applyOrderRefund(db, order, 'Canceled');
-            if (amount > 0) {
-                refunded++;
-                updated++;
-            } else {
-                await Order.updateStatus(order.id!, 'Canceled', {
-                    error_message: order.error_message || 'provider_submit_missing',
-                });
-                updated++;
+    if (!targeted) {
+        const orphaned = await Order.raw<any>(
+            `SELECT * FROM orders
+             WHERE status IN ('Pending', 'Processing')
+               AND api_provider_id IS NOT NULL
+               AND api_provider_order_id IS NULL
+               AND CAST(charge AS REAL) > 0
+             LIMIT 50`
+        );
+        for (const order of orphaned) {
+            try {
+                const amount = await applyOrderRefund(db, order, 'Canceled');
+                if (amount > 0) {
+                    refunded++;
+                    updated++;
+                } else {
+                    await Order.updateStatus(order.id!, 'Canceled', {
+                        error_message: order.error_message || 'provider_submit_missing',
+                    });
+                    updated++;
+                }
+            } catch (error: any) {
+                errors.push(`Orphan order ${order.id}: ${error.message}`);
             }
-        } catch (error: any) {
-            errors.push(`Orphan order ${order.id}: ${error.message}`);
         }
     }
 
-    const cursorRaw = await Setting.get(CURSOR_SETTING_KEY);
-    const cursorBefore = Math.max(0, parseInt(cursorRaw || '0', 10) || 0);
-    const pendingOrders = await Order.findPendingApiOrders(limit, cursorBefore);
+    const cursorRaw = targeted ? null : await Setting.get(CURSOR_SETTING_KEY);
+    const cursorBefore = targeted ? 0 : Math.max(0, parseInt(cursorRaw || '0', 10) || 0);
+    const pendingOrders = targeted
+        ? await Order.findManyWithProviderByIds(requestedIds!)
+        : await Order.findPendingApiOrders(limit, cursorBefore);
+
+    if (targeted) {
+        const fetched = new Set(pendingOrders.map((o) => o.id));
+        const skippedIds = requestedIds!.filter((id) => !fetched.has(id as number));
+        if (pendingOrders.length === 0) {
+            return {
+                checked, updated, refunded, errors,
+                batchSize: requestedIds!.length,
+                cursorBefore: 0,
+                cursorAfter: 0,
+                skippedIds,
+            };
+        }
+        // Targeted runs fall through to the shared provider-polling loop below;
+        // `skippedIds` is attached to the final result.
+        const result = await pollProviderStatuses(db, pendingOrders, {
+            checked, updated, refunded, errors,
+        });
+        checked = result.checked;
+        updated = result.updated;
+        refunded = result.refunded;
+        errors.push(...result.errors);
+        return {
+            checked,
+            updated,
+            refunded,
+            errors,
+            batchSize: requestedIds!.length,
+            cursorBefore: 0,
+            cursorAfter: 0,
+            skippedIds,
+        };
+    }
 
     let cursorAfter = cursorBefore;
     if (pendingOrders.length === 0) {
@@ -88,6 +136,36 @@ export async function checkOrderStatuses(
 
     const lastId = pendingOrders[pendingOrders.length - 1].id ?? cursorBefore;
     cursorAfter = pendingOrders.length < limit ? 0 : lastId;
+
+    const shared = await pollProviderStatuses(db, pendingOrders, {
+        checked, updated, refunded, errors,
+    });
+    checked = shared.checked;
+    updated = shared.updated;
+    refunded = shared.refunded;
+    errors.push(...shared.errors);
+
+    // Advance keyset only after this page was attempted (fair rotation across backlog)
+    if (advanceCursor) {
+        await Setting.set(CURSOR_SETTING_KEY, String(cursorAfter));
+    }
+
+    return { checked, updated, refunded, errors, batchSize: limit, cursorBefore, cursorAfter };
+}
+
+/** Provider-polling loop shared by the cron sweep and the targeted (ids) mode. */
+async function pollProviderStatuses(
+    db: D1Database,
+    pendingOrders: PendingApiOrder[],
+    state: { checked: number; updated: number; refunded: number; errors: string[] }
+): Promise<{ checked: number; updated: number; refunded: number; errors: string[] }> {
+    Order.use(db);
+    ApiProvider.use(db);
+    TelegramUser.use(db);
+    Setting.use(db);
+
+    let { checked, updated, refunded } = state;
+    const errors = state.errors;
 
     const ordersByProvider = new Map<number, { order: any; apiUrl: string; apiKey: string }[]>();
 
@@ -189,12 +267,7 @@ export async function checkOrderStatuses(
         }
     }
 
-    // Advance keyset only after this page was attempted (fair rotation across backlog)
-    if (advanceCursor) {
-        await Setting.set(CURSOR_SETTING_KEY, String(cursorAfter));
-    }
-
-    return { checked, updated, refunded, errors, batchSize: limit, cursorBefore, cursorAfter };
+    return { checked, updated, refunded, errors };
 }
 
 function isRefundMarked(errorMessage?: string | null): boolean {
