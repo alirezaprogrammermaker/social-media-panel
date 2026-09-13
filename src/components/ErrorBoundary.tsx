@@ -21,6 +21,21 @@ export class ErrorBoundary extends Component<Props, State> {
     }
 
     componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+        const isChunkLoadError = /Failed to fetch dynamically imported module|Importing a module script failed|error loading dynamically imported module/i.test(
+            error.message,
+        );
+
+        // Stale tab after deploy: old JS asks for a hashed chunk that no longer exists.
+        if (isChunkLoadError) {
+            const key = 'spa-chunk-reload';
+            if (!sessionStorage.getItem(key)) {
+                sessionStorage.setItem(key, '1');
+                window.location.reload();
+                return;
+            }
+            sessionStorage.removeItem(key);
+        }
+
         console.error('ErrorBoundary caught:', error, errorInfo);
     }
 
@@ -36,10 +51,10 @@ export class ErrorBoundary extends Component<Props, State> {
                             type="primary"
                             onClick={() => {
                                 this.setState({ hasError: false, error: null });
-                                window.location.href = '/';
+                                window.location.reload();
                             }}
                         >
-                            بازگشت به داشبورد
+                            بارگذاری مجدد
                         </Button>
                     }
                 />

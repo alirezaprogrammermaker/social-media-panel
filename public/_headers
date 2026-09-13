@@ -1,0 +1,10 @@
+# Hashed Vite chunks are content-addressed — cache forever in the browser.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# Always revalidate HTML so clients pick up new asset hashes after deploy.
+/index.html
+  Cache-Control: public, max-age=0, must-revalidate
+
+/
+  Cache-Control: public, max-age=0, must-revalidate
