@@ -46,3 +46,14 @@ Thumbs.db
 
 # Tool-specific
 .mimocode
+.cursor
+.serena
+
+# Local data dumps & archives (provider service snapshots, source zips)
+jap_services.json
+justanotherpanel.json
+socialpanel24.json
+socialpanel24_services.json
+sp24_services.json
+scripts/import-summary.json
+social-media-panel-dashboard-source.zip
