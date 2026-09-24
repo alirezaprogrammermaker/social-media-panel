@@ -28,7 +28,7 @@ export function Signup() {
         <Flex align="center" justify="center" style={{ minHeight: '100vh', background: '#0f172a' }}>
             <Card style={{ width: 360 }}>
                 <Title level={3} style={{ marginBottom: 0 }}>ساخت حساب</Title>
-                <Text type="secondary">ثبت‌نام کاربر عادی؛ دسترسی داشبورد فقط برای مدیر است</Text>
+                <Text type="secondary">اولین حساب به‌عنوان مدیر پنل ساخته می‌شود</Text>
 
                 <Form layout="vertical" onFinish={onFinish} style={{ marginTop: 20 }}>
                     <Form.Item

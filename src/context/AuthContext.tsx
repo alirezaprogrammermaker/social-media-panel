@@ -61,10 +61,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             }
         },
         signup: async (email, password) => {
+            // Backend /auth/signup creates role=admin and sets the session cookie
             await api('/auth/signup', { email, password });
-            // Dashboard is admin-only; signup creates a normal user session — clear it
-            await api('/auth/logout', {});
-            throw new Error('حساب ایجاد شد، اما دسترسی داشبورد فقط برای مدیر است. از seed-admin استفاده کنید.');
+            try {
+                setUser(await api('/dashboard/me'));
+            } catch {
+                setUser(null);
+                throw new Error('حساب ساخته شد ولی نشست تأیید نشد. از صفحه ورود دوباره وارد شو.');
+            } finally {
+                setLoading(false);
+            }
         },
         logout: async () => {
             await api('/auth/logout', {});
