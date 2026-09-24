@@ -1,7 +1,7 @@
 import { useEffect, useState, createContext, useContext } from 'react';
 import {
     Card, Input, Button, Typography, Space, Tag, Descriptions, Switch,
-    Table, message, Row, Col, Tabs, TimePicker, Alert, Divider,
+    Table, message, Row, Col, Tabs, TimePicker, Alert, Divider, ConfigProvider,
 } from 'antd';
 import {
     SaveOutlined, LinkOutlined, DeleteOutlined, InfoCircleOutlined,
@@ -387,8 +387,15 @@ function GeneralSettings() {
                                 فقط روی /signup پنل وب اثر دارد؛ عضویت ربات تلگرام جداست و قطع نمی‌شود.
                             </Text>
                         </div>
-                        <Switch checked={s.registrationDisabled} loading={s.loading === 'registration'} onChange={s.toggleRegistration}
-                            checkedChildren="غیرفعال" unCheckedChildren="فعال" />
+                        <ConfigProvider direction="ltr">
+                            <Switch
+                                checked={s.registrationDisabled}
+                                loading={s.loading === 'registration'}
+                                onChange={s.toggleRegistration}
+                                checkedChildren="غیرفعال"
+                                unCheckedChildren="فعال"
+                            />
+                        </ConfigProvider>
                     </div>
                 </Card>
             </Col>
